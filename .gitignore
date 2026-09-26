@@ -1,0 +1,12 @@
+# Firmware and third-party tools are NOT distributed with this repo -- see base/README.md and bin/README.md
+base/*.rbn
+bin/*.exe
+# build outputs
+build/
+out/
+*.o
+*.elf
+*.rbn
+*.bcl
+*.bin
+*.BIN
