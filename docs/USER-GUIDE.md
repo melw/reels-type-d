@@ -13,7 +13,9 @@ Windows gives larger cards by default.
 4. With the Reels **powered off**, insert the card and power on.
 5. The power LED lights and the screen stays black for about 30 s while it flashes. **Do not cut the
    power.** It then boots into the new firmware.
-6. Check the build number in the top right of the screen, e.g. `FW 270`.
+6. Check the build number: from FW 271 on, the start-up screen shows it ("Type D - FW 271"), and it is
+   always in the top right of the screen, e.g. `FW 271`. If the start-up screen still shows an older
+   number, or "Type D - WIP", the new file wasn't flashed.
 
 If the old build still boots, look at the card. If `FWDV280.BIN` is still there, the flash never ran.
 See [BUILDING.md: It didn't flash](BUILDING.md#it-didnt-flash).

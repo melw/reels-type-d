@@ -32,8 +32,9 @@ Using it: **[docs/USER-GUIDE.md](docs/USER-GUIDE.md)**. Building it:
 Windows 10/11 with WSL (Ubuntu) and Python 3:
 
 ```powershell
-# one-time: toolchain in WSL
+# one-time: toolchain in WSL, Pillow for the boot splash
 wsl sudo apt install gcc-mipsel-linux-gnu binutils-mipsel-linux-gnu
+pip install pillow
 
 # one-time: base\FWDV280.BIN (videodoctor's release) and bin\*.exe (packing tools)
 #           -- see base\README.md and bin\README.md
@@ -42,7 +43,7 @@ wsl sudo apt install gcc-mipsel-linux-gnu binutils-mipsel-linux-gnu
 .\build.ps1 -Build 271 -Drive E     # ...and copy it to the FAT32 SD card in E:
 ```
 
-Build 270 from this source is **byte-identical** to the published FW 270. That is the reproducibility
+`.\build.ps1 -Build 270 -NoSplash` from this source is **byte-identical** to the published FW 270. That is the reproducibility
 check if you want one.
 
 ## Repo layout

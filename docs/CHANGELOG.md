@@ -3,7 +3,12 @@
 Build numbers are the on-screen `FW N`. Only released builds and milestones are listed. Numbers in
 between were development and test builds.
 
-## FW 270: current release
+## FW 271
+- **Build number on the boot splash:** "Type D - FW 271" instead of "Type D - WIP". The splash is shown
+  by stock code before the mod runs, so it confirms which file was actually flashed. Otherwise identical
+  to 270.
+
+## FW 270
 - **OSD flicker fixed.** The OSD no longer disappears when the REC dot blinks.
 - **Stall thresholds corrected** back to 20/30 OnTimer ticks (~8 s warning, ~12 s stop).
 - Diagnostic erase counters built in but hidden (`DIAG_ERASE`).

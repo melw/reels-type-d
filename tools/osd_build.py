@@ -15,6 +15,8 @@ Options:
     KODAK_RES      std | native   std = 1600x1200 (default), native = stock 1728x1296 incl. sprocket holes
     KODAK_NOHOOKS  1              diagnostic: constant patches only, none of the mod's code runs
     KODAK_ANYBASE  1              skip the base SHA256 check (for porting to another base -- expect asserts)
+    KODAK_BUILD    <N>            build number for the boot splash ("Type D - FW <N>"); set by build.ps1
+    KODAK_SPLASH   0              keep the original "Type D - WIP" splash (default 1 = write the build number)
 
 Every patch asserts the ORIGINAL instruction first, so a wrong base fails loudly at build time instead of
 producing firmware that hangs at boot.
@@ -109,6 +111,47 @@ if res == "native":
     patch(img, 0xddc71c, 0x000004b0, 0x00000510, "height")       # 1200 -> 1296
     patch(img, 0x2bfeb0, 0x0c0cebb1, 0x24050030, "geometry")     # drop the 1600 clamp hook
 print(f"resolution: {res}")
+
+# Boot splash: "Type D - WIP" -> "Type D - FW <N>". The splash is a plain 864x480 JPEG that stock code shows
+# before any of the mod runs, so it proves WHICH file was flashed even if the mod itself never starts.
+# Both splash size getters (0x80125cf0/0x80125d10) return 0x5000, so the new JPEG must fit in 20480 bytes;
+# the bytes after the old JPEG are free up to 0x33a08c. Needs Pillow; KODAK_SPLASH=0 keeps the original.
+SPLASH_OFF, SPLASH_LEN, SPLASH_MAX = 0x333948, 20385, 0x5000
+SPLASH_SHA256 = "60cdc9b2ad876beb343d7d2f84e1d2f5ad5f06cd5665945e760c99bc3e4b3af7"
+if os.environ.get("KODAK_SPLASH", "1") == "1":
+    build_no = os.environ.get("KODAK_BUILD")
+    if not build_no:
+        die("KODAK_BUILD not set (build.ps1 sets it from -Build)")
+    try:
+        import io
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        die("the boot splash needs Pillow: pip install pillow  (or build with -NoSplash)")
+    old = bytes(img[SPLASH_OFF:SPLASH_OFF + SPLASH_LEN])
+    if hashlib.sha256(old).hexdigest() != SPLASH_SHA256:
+        die(f"splash @0x{0x80000000 + SPLASH_OFF:08x} is not the expected 'Type D - WIP' JPEG -- wrong base?")
+    for off in (0x125cf4, 0x125d14):
+        patch(img, off, 0x24025000, 0x24025000, "splash size getter")    # li v0,0x5000 (assert only)
+    pic = Image.open(io.BytesIO(old)).convert("RGB")
+    draw = ImageDraw.Draw(pic)
+    draw.rectangle([425, 170, 659, 213], fill=(249, 185, 0))             # erase "Type D - WIP"
+    font = ImageFont.load_default(size=34)                               # Pillow's bundled font: same on every machine
+    draw.text((431, 172), f"Type D - FW {build_no}", font=font, fill=(255, 255, 255),
+              stroke_width=1, stroke_fill=(255, 255, 255))               # stroke = bold, like the original
+    jpg = None
+    for q in range(95, 20, -1):                                          # best quality that fits the slot
+        # subsampling=1 (4:2:2) and baseline: the same format as the original splash -- the boot-time
+        # JPEG decoder has only ever been shown this one (0dan0's splash tool forces 4:2:2 too)
+        buf = io.BytesIO(); pic.save(buf, format="JPEG", quality=q, optimize=True, subsampling=1)
+        if buf.tell() <= SPLASH_MAX:
+            jpg = buf.getvalue(); break
+    if jpg is None:
+        die("could not fit the splash JPEG into 20480 bytes")
+    img[SPLASH_OFF:SPLASH_OFF + SPLASH_MAX] = bytes(SPLASH_MAX)           # clear the slot, then write
+    img[SPLASH_OFF:SPLASH_OFF + len(jpg)] = jpg
+    print(f"splash: 'Type D - FW {build_no}' ({len(jpg)} bytes, JPEG quality {q})")
+else:
+    print("splash: original ('Type D - WIP')")
 
 # ---- splice the mod ----------------------------------------------------------------------------
 for nm, addr, body in placed:

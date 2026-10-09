@@ -6,7 +6,7 @@
 |---|---|
 | Windows 10/11 | the packing tools are Windows executables |
 | WSL with Ubuntu | for the MIPS cross compiler. Tested: Ubuntu 24.04, `mipsel-linux-gnu-gcc` 12.4 |
-| Python 3 on Windows | as `python` on the PATH. Standard library only |
+| Python 3 on Windows | as `python` on the PATH, with Pillow (`pip install pillow`) for the boot splash |
 | `base\FWDV280.BIN` | videodoctor's Type D release, see [../base/README.md](../base/README.md) |
 | `bin\ntkcalcVS.exe`, `bin\bfc4ntkVS.exe` | Novatek packing tools, see [../bin/README.md](../bin/README.md) |
 
@@ -16,6 +16,7 @@ Toolchain, once:
 wsl --install -d Ubuntu              # if you don't have WSL yet
 wsl sudo apt update
 wsl sudo apt install gcc-mipsel-linux-gnu binutils-mipsel-linux-gnu
+pip install pillow
 ```
 
 ## Build
@@ -57,12 +58,14 @@ hook: compose blit -> wrap_compose
 | `-Drive E` | also copy the result to the FAT32 SD card in `E:` (runs `deploy.ps1`) |
 | `-NoHooks` | diagnostic: constant patches only, none of the mod's code ever runs. No OSD. |
 | `-Bitrate x1\|x2\|x4` | only with `-NoHooks`: static bitrate, because there's no menu |
+| `-NoSplash` | keep the original "Type D - WIP" boot splash. By default the splash shows "Type D - FW N", which tells you which file was flashed even if the mod itself doesn't start |
 
 ### Reproducibility check
 
-`.\build.ps1 -Build 270` from this source gives a `FWDV280.BIN` of 3,945,280 bytes, SHA256
+`.\build.ps1 -Build 270 -NoSplash` from this source gives a `FWDV280.BIN` of 3,945,280 bytes, SHA256
 `7bcb6f01b51e6b1fd4ca5d5764b3c2ca17be36bd523ff0bf4fd63ceadc5ed276`. That is byte-identical to the
-released FW 270. If you get the same hash, your toolchain matches. With a different GCC version the
+released FW 270, which predates the splash. If you get the same hash, your toolchain matches. The
+splash JPEG can differ slightly between Pillow versions, which changes the hash but nothing else. With a different GCC version the
 code can come out differently and still be fine, but check the full hook list and test on a throwaway
 reel.
 
