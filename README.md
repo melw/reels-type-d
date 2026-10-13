@@ -68,7 +68,7 @@ docs/                user guide, building, technical notes, changelog
 
 ## Status
 
-FW 270 is the current release. Contributions and ports are welcome. Read the hook-safety rules in
+FW 272 is the current release. Contributions and ports are welcome. Read the hook-safety rules in
 TECHNICAL.md first.
 
 ## Credits and licence

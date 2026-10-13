@@ -3,6 +3,16 @@
 Build numbers are the on-screen `FW N`. Only released builds and milestones are listed. Numbers in
 between were development and test builds.
 
+## FW 272
+- **Clearer menu state:** the `[ ]` brackets and the `Reset` row are shown only while a recording is
+  running. Outside recording, `Edit in REC` at the top of the list says where editing works. Previously
+  the brackets stayed visible in preview after a recording, which looked like a live menu.
+- The date brackets no longer show in plain preview.
+- **WB hardening:** saved WB values are used only if all three are 16–999; otherwise stock WB applies.
+  This fixes a unit whose settings memory made the mod apply ~0 gains (very dark picture,
+  `WB gains 000,000,000`). The first WB edit starts from 689,256,218 if the live gains are invalid, and
+  edits stop at 16 instead of 0.
+
 ## FW 271
 - **Build number on the boot splash:** "Type D - FW 271" instead of "Type D - WIP". The splash is shown
   by stock code before the mod runs, so it confirms which file was actually flashed. Otherwise identical

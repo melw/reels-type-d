@@ -115,6 +115,14 @@ extern uint32_t resolve(uint32_t h);                       /* 0x80006500 */
 #define WB_STEP 16      /* coarse (Left/Right) */
 #define WB_FINE 1       /* fine (+/-) */
 #define WB_MAX  999     /* cap so 3-digit display always fits */
+/* A WB gain outside WB_OK_MIN..WB_MAX is not a real setting: zeros or stray values in the NVM words, or
+ * live registers the stock firmware never wrote. Seen in the field: a unit whose NVM made us apply ~0
+ * gains (very dark picture, "WB gains 000,000,000"). Such values are treated as "not set". */
+#define WB_OK_MIN 16
+#define WB_OK(v) ((v) >= WB_OK_MIN && (v) <= WB_MAX)
+#define WB_DEF_R 689    /* stock D preset as read on a working unit -- the start point for a first edit */
+#define WB_DEF_G 256    /* when the live gains are not valid */
+#define WB_DEF_B 218
 /* Menu cursor. REWORKED 2026-09-25: the order below MUST match the on-screen row order top-to-bottom,
  * because Up/Down now walks the rows and the selected VALUE is wrapped in [ ]. */
 #define CUR_R    0
@@ -386,10 +394,14 @@ static void handle_buttons(int rec) {
     }
     /* WB fields (R/G/B) */
     int delta = dir * (coarse ? WB_STEP : WB_FINE);
-    if (!MENU[1]) { MENU[3] = rd(WB_R); MENU[4] = rd(WB_G); MENU[5] = rd(WB_B); MENU[1] = 1; }
+    if (!MENU[1]) {                              /* first edit: start from the live gains... */
+        uint32_t r = rd(WB_R), g = rd(WB_G), b = rd(WB_B);
+        if (!(WB_OK(r) && WB_OK(g) && WB_OK(b))) { r = WB_DEF_R; g = WB_DEF_G; b = WB_DEF_B; }   /* ...if sane */
+        MENU[3] = r; MENU[4] = g; MENU[5] = b; MENU[1] = 1;
+    }
     int idx = 3 + ((int)MENU[0] - CUR_R);        /* R/G/B are cursor 0/1/2 -> MENU[3/4/5] */
     int v = (int)MENU[idx] + delta;
-    if (v < 0) v = 0; if (v > WB_MAX) v = WB_MAX;
+    if (v < WB_OK_MIN) v = WB_OK_MIN; if (v > WB_MAX) v = WB_MAX;   /* stay in the range load_wb_once accepts */
     MENU[idx] = (uint32_t)v;
     MENU[8] = (uint32_t)delta; MENU[9] = DELTA_SHOW;   /* show last adjust briefly, then auto-clear */
     wr(NVM_R, MENU[3]); wr(NVM_G, MENU[4]); wr(NVM_B, MENU[5]);  /* persist */
@@ -398,7 +410,7 @@ static void handle_buttons(int rec) {
 static void load_wb_once(void) {
     if (MENU[6]) return;
     uint32_t r = rd(NVM_R), g = rd(NVM_G), b = rd(NVM_B);
-    if (r || g || b) { MENU[3] = r; MENU[4] = g; MENU[5] = b; MENU[1] = 1; }
+    if (WB_OK(r) && WB_OK(g) && WB_OK(b)) { MENU[3] = r; MENU[4] = g; MENU[5] = b; MENU[1] = 1; }   /* else: stock WB */
     MENU[6] = 1;
 }
 /* restore persisted date once per boot + apply via setdate (scratch resets on power-cycle). Called
@@ -499,11 +511,17 @@ static void rend_p0(volatile uint8_t *p0, int clear) {
         int v = (int)rd(QPRAW_ADDR); if (v >= 0 && v <= 99) qp = v;   /* raw pre-clamp Qp (set by osd_main) */
         frm = *(volatile int *)(ctx + 0xd4u);
     }
-    int wbsel = rec && MENU[0] <= CUR_B;        /* any WB channel selected -> drop the indent for [ ] */
-    int dtsel = rec && MENU[0] >= CUR_YEAR && MENU[0] <= CUR_DAY;
-    int nrows = rec ? 14 : 7;   /* sel: + WB-set rows gone; Reset now last, after Date */
+    /* live = a recording is actually running (movie state 10, the same flag the stall guard uses). `rec`
+     * (ctx valid) LINGERS in preview after a stop, which keeps the diagnostics on screen on purpose -- but
+     * the menu only takes input while recording, so the [ ] cursor and the Reset row are drawn only when
+     * live. Otherwise a hint row says where editing works (users read the stale brackets as a live menu). */
+    int live = rec && (*(volatile uint8_t *)0x80e0a624u == 10);
+    int wbsel = live && MENU[0] <= CUR_B;       /* any WB channel selected -> drop the indent for [ ] */
+    int dtsel = live && MENU[0] >= CUR_YEAR && MENU[0] <= CUR_DAY;
+    int nrows = rec ? 14 : 8;   /* rec layout: Reset row (live) or hint row (stopped); preview: + hint row */
     Y = 444 - (nrows - 1) * 13;
     if (clear) cclr(p0, SX - 2, Y - 2, 100, nrows * 13 + 4, 0);   /* 0 = repaint over an already-wiped area */
+    if (!live) { cstr(p0, SX, Y, "Edit in REC", WHT); Y += 13; }   /* 11 chars; 14 ("Edit: REC only") clipped the last letter on the LCD */
     if (rec) { wr(SENT_ADDR, glyph_px_off(SX, Y, 'F'));   /* erase sentinel = a lit pixel of this "F" */
                cstr(p0, SX, Y, "Frm:", CYN); cnum(p0, SX + 63 - ndig(frm) * 7, Y, frm, CYN); Y += 13; }
     else wr(SENT_ADDR, 0u);
@@ -512,37 +530,37 @@ static void rend_p0(volatile uint8_t *p0, int clear) {
      * need for a separate "WB set" row. */
     cstr(p0, SX, Y, "WB gains:", YEL); Y += 13;
     X = wbsel ? SX : SX + 4;                 /* no indent when bracketed, to buy back the [ ] width */
-    X = cbr(p0, X, Y, rec && MENU[0] == CUR_R, "[", YEL);
+    X = cbr(p0, X, Y, live && MENU[0] == CUR_R, "[", YEL);
     X = cfix(p0, X, Y, wrv, 3, YEL);
-    X = cbr(p0, X, Y, rec && MENU[0] == CUR_R, "]", YEL); X = cstr(p0, X, Y, ",", YEL);
-    X = cbr(p0, X, Y, rec && MENU[0] == CUR_G, "[", YEL);
+    X = cbr(p0, X, Y, live && MENU[0] == CUR_R, "]", YEL); X = cstr(p0, X, Y, ",", YEL);
+    X = cbr(p0, X, Y, live && MENU[0] == CUR_G, "[", YEL);
     X = cfix(p0, X, Y, wgv, 3, YEL);
-    X = cbr(p0, X, Y, rec && MENU[0] == CUR_G, "]", YEL); X = cstr(p0, X, Y, ",", YEL);
-    X = cbr(p0, X, Y, rec && MENU[0] == CUR_B, "[", YEL);
+    X = cbr(p0, X, Y, live && MENU[0] == CUR_G, "]", YEL); X = cstr(p0, X, Y, ",", YEL);
+    X = cbr(p0, X, Y, live && MENU[0] == CUR_B, "[", YEL);
     X = cfix(p0, X, Y, wbv, 3, YEL);
-    cbr(p0, X, Y, rec && MENU[0] == CUR_B, "]", YEL); Y += 13;
+    cbr(p0, X, Y, live && MENU[0] == CUR_B, "]", YEL); Y += 13;
     if (rec) {
         X = cstr(p0, SX, Y, "FPS: ", CYN);
-        X = cbr(p0, X, Y, MENU[0] == CUR_FPS, "[", CYN);
+        X = cbr(p0, X, Y, live && MENU[0] == CUR_FPS, "[", CYN);
         X = cnum(p0, X, Y, (int)MENU[17], CYN);
-        cbr(p0, X, Y, MENU[0] == CUR_FPS, "]", CYN); Y += 13;
+        cbr(p0, X, Y, live && MENU[0] == CUR_FPS, "]", CYN); Y += 13;
         X = cstr(p0, SX, Y, "BR: ", CYN);
-        X = cbr(p0, X, Y, MENU[0] == CUR_BR, "[", CYN);
+        X = cbr(p0, X, Y, live && MENU[0] == CUR_BR, "[", CYN);
         X = cstr(p0, X, Y, "x", CYN); X = cnum(p0, X, Y, (int)MENU[24], CYN);
-        cbr(p0, X, Y, MENU[0] == CUR_BR, "]", CYN); Y += 13;
+        cbr(p0, X, Y, live && MENU[0] == CUR_BR, "]", CYN); Y += 13;
         X = cstr(p0, SX, Y, "ASt: ", CYN);
-        X = cbr(p0, X, Y, MENU[0] == CUR_AST, "[", CYN);
+        X = cbr(p0, X, Y, live && MENU[0] == CUR_AST, "[", CYN);
         X = cstr(p0, X, Y, MENU[22] ? "ON" : "OFF", CYN);
-        cbr(p0, X, Y, MENU[0] == CUR_AST, "]", CYN); Y += 13;
+        cbr(p0, X, Y, live && MENU[0] == CUR_AST, "]", CYN); Y += 13;
         X = cstr(p0, SX, Y, "Qp:", QPC); X = cnum(p0, X, Y, qp, QPC);   /* current(driven) / lowest-this-recording */
         X = cstr(p0, X, Y, "/", QPC);
         { uint32_t m = rd(QPMIN_ADDR);   /* "-" until the frm>15 warmup lets tracking start */
           X = m ? cnum(p0, X, Y, (int)m, QPC) : cstr(p0, X, Y, "-", QPC); }
         X = cstr(p0, X, Y, " f", QPC);       /* floor setting: "-" when off */
-        X = cbr(p0, X, Y, MENU[0] == CUR_QP, "[", QPC);
+        X = cbr(p0, X, Y, live && MENU[0] == CUR_QP, "[", QPC);
         if (MENU[20] >= QPF_MIN && MENU[20] <= QPF_MAX) X = cnum(p0, X, Y, (int)MENU[20], QPC);
         else X = cstr(p0, X, Y, "-", QPC);
-        cbr(p0, X, Y, MENU[0] == CUR_QP, "]", QPC); Y += 13;
+        cbr(p0, X, Y, live && MENU[0] == CUR_QP, "]", QPC); Y += 13;
         /* per-frame encoded size (KB): current / max-this-recording. *(ctx+0xd8) = frame bytes. A max
          * far above normal just before a freeze = encoder output-buffer overrun. */
         X = cstr(p0, SX, Y, "Sz:", QPC);
@@ -562,16 +580,16 @@ static void rend_p0(volatile uint8_t *p0, int clear) {
     /* Date LAST in the list (persisted; applied via setdate). Shown in preview + recording. */
     cstr(p0, SX, Y, "Date:", CYN); Y += 13;
     X = dtsel ? SX : SX + 4;                 /* no indent when bracketed */
-    X = cbr(p0, X, Y, MENU[0] == CUR_YEAR, "[", CYN);
+    X = cbr(p0, X, Y, live && MENU[0] == CUR_YEAR, "[", CYN);
     X = cfix(p0, X, Y, (int)MENU[12], 4, CYN);
-    X = cbr(p0, X, Y, MENU[0] == CUR_YEAR, "]", CYN); X = cstr(p0, X, Y, "-", CYN);
-    X = cbr(p0, X, Y, MENU[0] == CUR_MON, "[", CYN);
+    X = cbr(p0, X, Y, live && MENU[0] == CUR_YEAR, "]", CYN); X = cstr(p0, X, Y, "-", CYN);
+    X = cbr(p0, X, Y, live && MENU[0] == CUR_MON, "[", CYN);
     X = cfix(p0, X, Y, (int)MENU[13], 2, CYN);
-    X = cbr(p0, X, Y, MENU[0] == CUR_MON, "]", CYN); X = cstr(p0, X, Y, "-", CYN);
-    X = cbr(p0, X, Y, MENU[0] == CUR_DAY, "[", CYN);
+    X = cbr(p0, X, Y, live && MENU[0] == CUR_MON, "]", CYN); X = cstr(p0, X, Y, "-", CYN);
+    X = cbr(p0, X, Y, live && MENU[0] == CUR_DAY, "[", CYN);
     X = cfix(p0, X, Y, (int)MENU[14], 2, CYN);
-    X = cbr(p0, X, Y, MENU[0] == CUR_DAY, "]", CYN); Y += 13;
-    if (rec) {                                   /* Reset LAST, below Date */
+    X = cbr(p0, X, Y, live && MENU[0] == CUR_DAY, "]", CYN); Y += 13;
+    if (live) {                                  /* Reset LAST, below Date (only while it can be used) */
         X = cbr(p0, SX, Y, MENU[0] == CUR_RST, "[", WHT);
         X = cstr(p0, X, Y, "Reset", WHT);
         cbr(p0, X, Y, MENU[0] == CUR_RST, "]", WHT);

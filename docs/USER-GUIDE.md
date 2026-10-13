@@ -33,6 +33,7 @@ only groups the rows. Every value has a text label.
 
 **In preview:**
 ```
+Edit in REC      reminder: settings can only be changed while recording
 WB gains:
  689,256,204     white balance gains (red, green, blue)
 Res:1600x1200    capture resolution
@@ -60,8 +61,9 @@ Date:
 Reset
 ```
 
-`Qp`, `Sz` and `Cum` stay on screen after a recording ends. If anything ever goes wrong, a photo of
-the screen with the `FW` number is the most useful thing you can post.
+`Qp`, `Sz` and `Cum` stay on screen after a recording ends. The `[ ]` brackets and the `Reset` row
+disappear, and `Edit in REC` returns at the top. If anything ever goes wrong, a photo of the screen
+with the `FW` number is the most useful thing you can post.
 
 ## The menu
 
@@ -80,7 +82,7 @@ The `[ ]` brackets mark the value being edited.
 
 | setting | values | default | notes |
 |---|---|---|---|
-| **WB** R, G, B | 0–999 each | stock auto WB | Applied live, so you see the result straight away. The first press takes the current gains as its starting point, so nothing jumps |
+| **WB** R, G, B | 16–999 each | stock auto WB | Applied live, so you see the result straight away. The first press takes the current gains as its starting point, so nothing jumps (or 689,256,218 if the current gains look invalid) |
 | **FPS** | 18 / 16 | 18 | Playback rate written into the file. Takes effect on the **next** recording |
 | **BR** | x1 / x2 / x4 | x4 | x1 ≈ 8 Mb/s (stock), x2 ≈ 16, x4 ≈ 32. Takes effect on the next recording. |
 | **ASt** | ON / OFF | ON | Reel-end auto-stop. Turn it OFF if very faded or thin film gets stopped early |
@@ -133,6 +135,7 @@ a slow or failing card, or a Qp floor set too high at x4.
 | symptom | what to do |
 |---|---|
 | Flashed, but the old build still boots | See [It didn't flash](BUILDING.md#it-didnt-flash) |
-| Buttons do nothing in preview | Expected. The menu only works while recording |
+| Buttons do nothing in preview | Expected. The menu only works while recording (`Edit in REC` at the top of the list) |
+| Very dark picture, `WB gains` near 000,000,000 | Start a recording and use `Reset` (FW 272+ ignores invalid saved WB values) |
 | Reels of faded or thin film stop early with `REEL ENDED` | Set `ASt: OFF` |
 | `REC STALLED` | Try another card. Check `QpF` is off. |
