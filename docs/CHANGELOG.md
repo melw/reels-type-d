@@ -1,7 +1,23 @@
 # Changelog
 
 Build numbers are the on-screen `FW N`. Only released builds and milestones are listed. Numbers in
-between were development and test builds.
+between were development and test builds. The top entry is the latest release. Where a `Rebuild` line
+is given, that command run on the release's commit gives a `FWDV280.BIN` with exactly that SHA256 (see
+[BUILDING.md](BUILDING.md#reproducibility-check)).
+
+## FW 280
+Rebuild: `.\build.ps1 -Build 280 -Date 2026-11-10`, SHA256
+`be659c6552a7df370efb8b18de0590d39d95b92331d3d59f356071c9b29982ac`
+
+- **Manual exposure.** The `Exp:` row in the menu switches between `A` (auto, stock behaviour) and
+  `M` (manual). The first +/− or Left/Right press switches to manual at the current exposure. +/− then
+  adjusts by ~6 % and Left/Right by one stop. One more Left/− at the minimum (20 µs), or `Reset`,
+  returns to auto. The setting is saved across power cycles.
+- **Reel-end auto-stop is off in manual** (it relies on the auto exposure). The menu shows
+  `ASt: off (M)`. Your ASt setting comes back when you return to auto, after a ~20 s settling time.
+- **The auto-exposure calculation is paused in manual.**
+- **New boot splash:** a feature summary with the build number and build date.
+- Builds 273–279 were shared for internal testing only.
 
 ## FW 272
 - **Clearer menu state:** the `[ ]` brackets and the `Reset` row are shown only while a recording is
@@ -19,6 +35,9 @@ between were development and test builds.
   to 270.
 
 ## FW 270
+Rebuild (commit `391530a`): `.\build.ps1 -Build 270 -NoSplash`, SHA256
+`7bcb6f01b51e6b1fd4ca5d5764b3c2ca17be36bd523ff0bf4fd63ceadc5ed276`
+
 - **OSD flicker fixed.** The OSD no longer disappears when the REC dot blinks.
 - **Stall thresholds corrected** back to 20/30 OnTimer ticks (~8 s warning, ~12 s stop).
 - Diagnostic erase counters built in but hidden (`DIAG_ERASE`).

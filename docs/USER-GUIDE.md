@@ -13,9 +13,9 @@ Windows gives larger cards by default.
 4. With the Reels **powered off**, insert the card and power on.
 5. The power LED lights and the screen stays black for about 30 s while it flashes. **Do not cut the
    power.** It then boots into the new firmware.
-6. Check the build number: from FW 271 on, the start-up screen shows it ("Type D - FW 271"), and it is
-   always in the top right of the screen, e.g. `FW 271`. If the start-up screen still shows an older
-   number, or "Type D - WIP", the new file wasn't flashed.
+6. Check the build number: the start-up screen shows it at the bottom (`Vers: FW <N> Type D` and the
+   build date), and it is always in the top right of the screen as `FW <N>`. If the start-up screen 
+   still shows an older number, or "Type D - WIP", the new file wasn't flashed.
 
 If the old build still boots, look at the card. If `FWDV280.BIN` is still there, the flash never ran.
 See [BUILDING.md: It didn't flash](BUILDING.md#it-didnt-flash).
@@ -38,7 +38,7 @@ WB gains:
  689,256,204     white balance gains (red, green, blue)
 Res:1600x1200    capture resolution
 Gain:...         sensor gain
-Exp:...us        exposure time
+Exp:...us        exposure time (ends in M when exposure is manual)
 Date:
  1984-09-01      date that will be written into recordings
 ```
@@ -50,12 +50,12 @@ WB gains:
 [689],256,204    [ ] = the value you are editing
 FPS: 18          frame rate written into the file
 BR: x4           bitrate multiplier
-ASt: ON          reel-end auto-stop
+ASt: ON          reel-end auto-stop (off (M) while exposure is manual)
 Qp:22/16 f-      encoder Qp now / lowest this recording, then the Qp floor setting (- = off)
 Sz:180/420K      encoded frame size now / largest this recording
 Cum:312M         total encoded so far
 Gain:...
-Exp:...us A
+Exp:...us A      exposure: A = auto, M = manual
 Date:
  1984-09-01
 Reset
@@ -87,12 +87,27 @@ The `[ ]` brackets mark the value being edited.
 | **BR** | x1 / x2 / x4 | x4 | x1 ≈ 8 Mb/s (stock), x2 ≈ 16, x4 ≈ 32. Takes effect on the next recording. |
 | **ASt** | ON / OFF | ON | Reel-end auto-stop. Turn it OFF if very faded or thin film gets stopped early |
 | **QpF** (the `f` value on the Qp row) | - (off), 15–22 | off | Advanced: leave it off. See below |
+| **Exp** | A (auto) / M, 20–33000 µs | A | See "Manual exposure" below |
 | **Date** | 1980-01-01 … 2100-12-31 | 2026-01-01 | Date stamp for new recordings. |
-| **Reset** | press any adjust button | | Everything back to the defaults above, and WB back to stock auto |
+| **Reset** | press any adjust button | | Everything back to the defaults above, WB back to stock auto, exposure back to A |
 
 **Qp floor (QpF).** Experimental. This sets a minimum for the encoder's quantiser. Off means stock
 behaviour. At x4 the encoder wants to go down to about Qp 15. Can cause stalls (`REC STALLED`) on x4 BR.
 It is safer at x1/x2.
+
+**Manual exposure (Exp).** Use it when the picture pumps light/dark every few seconds, typically on
+dense or dark film. On such film the stock auto exposure only allows a few fixed steps (8333 and 16666
+µs) and flips between them.
+- On the `Exp:` row, the first press of any adjust button switches to manual (`M`) at the current
+  exposure, so the picture doesn't jump.
+- **+/−** adjust by about 6 %, **Left/Right** by one stop (half or double). Try values between the
+  steps, e.g. 10000–12000.
+- **Back to auto:** press Left or − at the lowest value (20), or use `Reset`.
+- The setting is **saved**, so a unit stays in manual after a power cycle until you switch it back. The
+  `M` at the end of the `Exp:` row shows it.
+- **In manual the reel-end auto-stop is off** (`ASt: off (M)`), because it relies on the auto
+  exposure. Stop the recording yourself at the end of the reel. Back in auto, your `ASt` setting
+  returns after about 20 s.
 
 ## Automatic stops
 
@@ -116,7 +131,10 @@ NO NEW FRAMES
 STOP REC NOW
 ```
 After about 12 s it stops by itself and shows `REC STALLED / AUTO-STOPPED / FILE SAVED`. Common causes:
-a slow or failing card, or a Qp floor set too high at x4.
+a slow or failing card, a Qp floor set too high at x4, or a single extremely grainy, bright shot in
+**manual exposure at x4**. That last one produces frames too large for the encoder: `Qp:` shows 10, and
+the second number on the `Sz:` row (the largest frame so far) is far above the usual ~250K. If it always
+stalls at the same spot on one reel, record that reel at x2, or use Auto exposure at x4.
 
 ## Tips
 
@@ -138,4 +156,6 @@ a slow or failing card, or a Qp floor set too high at x4.
 | Buttons do nothing in preview | Expected. The menu only works while recording (`Edit in REC` at the top of the list) |
 | Very dark picture, `WB gains` near 000,000,000 | Start a recording and use `Reset` (FW 272+ ignores invalid saved WB values) |
 | Reels of faded or thin film stop early with `REEL ENDED` | Set `ASt: OFF` |
-| `REC STALLED` | Try another card. Check `QpF` is off. |
+| `REC STALLED` | Try another card. Check `QpF` is off. Always at the same spot on one reel in manual exposure at x4: record it at `BR: x2`, or use Auto exposure |
+| Picture pumps light/dark every few seconds, `Exp:` jumps between 8333 and 16666 | Use manual exposure (`Exp` row), e.g. 10000–12000 |
+| The reel ended but recording didn't stop | Check the `Exp:` row: in manual (`M`) the reel-end auto-stop is off |

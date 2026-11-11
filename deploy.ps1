@@ -1,7 +1,7 @@
 <#
   deploy.ps1 - copy a built FWDV280.BIN to an SD card so the Reels flashes it at the next power-on.
 
-  Usage:  .\deploy.ps1 -Bin out\build-271\FWDV280.BIN -Drive E
+  Usage:  .\deploy.ps1 -Bin out\build-<N>\FWDV280.BIN -Drive E
 
   Writes FWDV280.BIN plus an empty NVTDELFW folder to the card root. NVTDELFW tells the bootloader to
   delete the file after flashing -- without it, the device reflashes on every boot.

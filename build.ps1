@@ -9,11 +9,13 @@
     5. optional: copy to an SD card        (-Drive E)
 
   Usage:
-    .\build.ps1 -Build 271                  # build, stage to out\build-271\
-    .\build.ps1 -Build 271 -Drive E         # ...and copy it to the SD card in E:
-    .\build.ps1 -Build 271 -Resolution native
-    .\build.ps1 -Build 271 -NoHooks         # diagnostic: constant patches only, none of the mod runs
-    .\build.ps1 -Build 270 -NoSplash        # original boot splash (reproduces the published FW 270)
+    .\build.ps1 -Build <N>                  # build, stage to out\build-<N>\
+    .\build.ps1 -Build <N> -Drive E         # ...and copy it to the SD card in E:
+    .\build.ps1 -Build <N> -Resolution native
+    .\build.ps1 -Build <N> -NoHooks         # diagnostic: constant patches only, none of the mod runs
+    .\build.ps1 -Build <N> -NoSplash        # original "Type D - WIP" boot splash
+    .\build.ps1 -Build <N> -Date YYYY-MM-DD # splash date (default: today) -- rebuild a release byte-identically
+                                            # (each CHANGELOG entry lists its exact command and SHA256)
 
   -Build is the number shown on screen as "FW <N>" -- bump it for every build you flash.
 
@@ -27,7 +29,8 @@ param(
   [ValidateSet("x1","x2","x4")][string]$Bitrate = "x4",   # only used with -NoHooks (otherwise it's a menu item)
   [string]$Drive = "",
   [switch]$NoHooks,
-  [switch]$NoSplash   # keep the original "Type D - WIP" boot splash (e.g. to reproduce FW 270)
+  [switch]$NoSplash,  # keep the original "Type D - WIP" boot splash
+  [string]$Date = (Get-Date -Format "yyyy-MM-dd")   # build date shown on the boot splash
 )
 $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
@@ -59,7 +62,7 @@ $cflags = "-DFW_BUILD=$Build -march=mips32 -EL -ffreestanding -nostdlib -nodefau
           "-fomit-frame-pointer -fno-stack-protector -Os -mno-abicalls -fno-pic -fno-reorder-blocks"
 # The mod is linked to run at 0x8034116c (free space in the base). orig = the stock WB function the
 # per-frame hook tail-calls; resolve = the firmware's display-pool getter.
-$lflags = "-EL -Ttext=0x8034116c -e 0x8034116c --defsym orig=0x802b7b7c --defsym resolve=0x80006500"
+$lflags = "-EL -Ttext=0x8034116c -e 0x8034116c --defsym orig=0x802b7b7c --defsym resolve=0x80006500 --defsym set_exp=0x801df99c --defsym set_gain=0x801df88c --defsym ae_calc=0x801e4854"
 Native { & wsl.exe bash -c "cd '$wslRoot' && mipsel-linux-gnu-gcc $cflags -c src/osdmenu.c -o build/osd.o && mipsel-linux-gnu-ld $lflags -o build/osd.elf build/osd.o" }
 CheckExit "compile/link"
 
@@ -68,7 +71,9 @@ Step "2/4 splice + patch"
 $env:KODAK_RES = $Resolution
 $env:KODAK_BR = $Bitrate
 $env:KODAK_NOHOOKS = $(if($NoHooks){"1"}else{"0"})   # set every run so it can't leak from a previous one
-$env:KODAK_BUILD = "$Build"                           # boot splash text: "Type D - FW <N>"
+if($Date -notmatch '^\d{4}-\d{2}-\d{2}$'){ Die "-Date must be YYYY-MM-DD" }
+$env:KODAK_BUILD = "$Build"                           # boot splash: "Vers: FW <N> Type D  Date: <date>"
+$env:KODAK_DATE = $Date
 $env:KODAK_SPLASH = $(if($NoSplash){"0"}else{"1"})
 Native { python "$Root\tools\osd_build.py" }
 CheckExit "osd_build.py"
@@ -92,7 +97,7 @@ Copy-Item "$Root\build\vd-osd.bcl" "$out\FWDV280.BIN" -Force
   "Build=$Build"
   "Resolution=$Resolution"
   "NoHooks=$([bool]$NoHooks)"
-  "Splash=$(if($NoSplash){"original"}else{"FW $Build"})"
+  "Splash=$(if($NoSplash){"original"}else{"FW $Build, $Date"})"
   "SourceSHA256=$((Get-FileHash "$Root\src\osdmenu.c" -Algorithm SHA256).Hash)"
   "FirmwareSHA256=$((Get-FileHash "$out\FWDV280.BIN" -Algorithm SHA256).Hash)"
   "Date=$(Get-Date -Format o)"

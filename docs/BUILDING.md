@@ -22,11 +22,13 @@ pip install pillow
 ## Build
 
 ```powershell
-.\build.ps1 -Build 271
+.\build.ps1 -Build <N>
 ```
 
+`<N>` is the number shown on screen as `FW <N>`. Use a new number for every build you flash.
+
 If PowerShell refuses to run scripts:
-`powershell -ExecutionPolicy Bypass -File .\build.ps1 -Build 271`.
+`powershell -ExecutionPolicy Bypass -File .\build.ps1 -Build <N>`.
 
 What it does:
 
@@ -36,9 +38,9 @@ What it does:
    code and runs the `$k0/$k1` safety audit. It then installs the hooks. **Every patch first checks the
    original instruction is there**, so a wrong base fails here, not on the device.
 3. Checksums, compresses and checksums again → `build\vd-osd.bcl`.
-4. Stages `out\build-271\FWDV280.BIN` and a `manifest.txt` (source and firmware hashes).
+4. Stages `out\build-<N>\FWDV280.BIN` and a `manifest.txt` (source and firmware hashes).
 
-A good run ends with `BUILD OK: FW 271` and lists all six hooks:
+A good run ends with `BUILD OK: FW <N>` and lists all the hooks:
 
 ```
 hook: WB call -> osd_main
@@ -47,6 +49,8 @@ hook: bitrate -> bitrate_stub (menu x1/x2/x4)
 hook: RC Qp clamp -> qpfloor_stub
 hook: OnTimer -> my_ontimer
 hook: compose blit -> wrap_compose
+hook: AE set_exp/set_gain (8 sites) -> ae_exp_hook / ae_gain_hook
+hook: AE calc -> ae_calc_hook (frozen in manual)
 ```
 
 ### Options
@@ -58,21 +62,25 @@ hook: compose blit -> wrap_compose
 | `-Drive E` | also copy the result to the FAT32 SD card in `E:` (runs `deploy.ps1`) |
 | `-NoHooks` | diagnostic: constant patches only, none of the mod's code ever runs. No OSD. |
 | `-Bitrate x1\|x2\|x4` | only with `-NoHooks`: static bitrate, because there's no menu |
-| `-NoSplash` | keep the original "Type D - WIP" boot splash. By default the splash shows "Type D - FW N", which tells you which file was flashed even if the mod itself doesn't start |
+| `-Date YYYY-MM-DD` | the build date on the boot splash. Default: today. Pass a release's date to rebuild it byte-identically |
+| `-NoSplash` | keep the original "Type D - WIP" boot splash. By default the splash shows a feature summary with `Vers: FW N Type D` and the build date, which tells you which file was flashed even if the mod itself doesn't start. It is drawn with Courier Prime from `tools/fonts/` (SIL Open Font License, see `tools/fonts/OFL.txt`) |
 
 ### Reproducibility check
 
-`.\build.ps1 -Build 270 -NoSplash` from this source gives a `FWDV280.BIN` of 3,945,280 bytes, SHA256
-`7bcb6f01b51e6b1fd4ca5d5764b3c2ca17be36bd523ff0bf4fd63ceadc5ed276`. That is byte-identical to the
-released FW 270, which predates the splash. If you get the same hash, your toolchain matches. The
-splash JPEG can differ slightly between Pillow versions, which changes the hash but nothing else. With a different GCC version the
-code can come out differently and still be fine, but check the full hook list and test on a throwaway
-reel.
+A release rebuilds byte-identically from its commit with the same toolchain: check out that commit and
+run the command from its [CHANGELOG](CHANGELOG.md) entry (its build number and the date shown on its
+start-up screen). `out\build-<N>\manifest.txt` has the resulting SHA256 to compare with the one listed
+there.
+
+Reference toolchain: `mipsel-linux-gnu-gcc` 12.4.0 (Ubuntu 24.04), Pillow 12.3.0. If you get the same
+hash, your toolchain matches. The splash JPEG can differ slightly between Pillow versions, which changes
+the hash but nothing else. With a different GCC version the code can come out differently and still be
+fine, but check the full hook list and test on a throwaway reel.
 
 ## Flash
 
 ```powershell
-.\deploy.ps1 -Bin out\build-271\FWDV280.BIN -Drive E
+.\deploy.ps1 -Bin out\build-<N>\FWDV280.BIN -Drive E
 ```
 
 This refuses any card that isn't FAT32. It copies the file, creates the empty `NVTDELFW` folder and

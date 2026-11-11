@@ -1,13 +1,14 @@
 /* osdmenu.c -- Kodak Reels Type D firmware mod (on-screen display, settings menu, recording guards).
  *
  * Linked at 0x8034116c and spliced into videodoctor's Type D base by tools/osd_build.py, which also
- * installs the six hooks that call into this file (see docs/TECHNICAL.md for the full map):
+ * installs the hooks that call into this file (see docs/TECHNICAL.md for the full map):
  *   osd_main      per captured frame (via the stock WB call): draw OSD, run the menu, apply WB/FPS/date
  *   fps_stub      frame-rate setup: 16 or 18 fps from the menu
  *   bitrate_stub  record-init: bitrate multiplier x1/x2/x4 from the menu
  *   qpfloor_stub  rate-control minimum Qp (menu "QpF", OFF = stock behaviour)
  *   my_ontimer    movie-window timer (~2-3 Hz): stall detector, REC STALLED warning, reel-end auto-stop
  *   wrap_compose  UI compose blit: repaint the OSD when the blit wipes it (fixes the record-mode flicker)
+ *   ae_exp_hook / ae_gain_hook   the AE's sensor exposure/gain calls: substitute the manual values
  *
  * Buttons: D button struct @ 0xA0E8b7d0 (uncached):
  *   button[0]@0xA0E8b7d0 = code bitmask: UP 0x1 DOWN 0x2 LEFT 0x4 RIGHT 0x8 BACK 0x20
@@ -61,6 +62,8 @@ extern uint32_t resolve(uint32_t h);                       /* 0x80006500 */
 #define NVM_FPSN 0x80E0ADD0u /* word 11 = fps number (16 or 18) */
 #define NVM_QPF  0x80E0ADE0u /* word 15 = Qp floor, NEW semantics: 0 = OFF, else 15..22. */
 #define NVM_BR   0x80E0ADDCu /* word 14 = bitrate multiplier, ONLY 1/2/4 (0/unset/anything else -> BR_DEF). */
+#define NVM_AEXP  0x80E0ADE4u /* word 16 = manual exposure (us); 0/out of range = Auto (fresh unit reads 0) */
+#define NVM_AGAIN 0x80E0ADE8u /* word 17 = gain captured when manual was entered (x100) */
 #define NVM_AST  0x80E0ADD8u /* word 13 = reel-end auto-stop. Stored as a DISABLE flag so a fresh unit
                               * (NVM reads 0) defaults to ON: 0/unset = ON, 1 = user turned it OFF. */
 
@@ -75,7 +78,8 @@ extern uint32_t resolve(uint32_t h);                       /* 0x80006500 */
  *                    [20]=Qp floor (16..26) [21]=qpfloor-loaded-this-boot
  *                    [22]=reel-end auto-stop (1=on,0=off) [23]=autostop-loaded-this-boot
  *                    [24]=bitrate multiplier (1/2/4) [25]=bitrate-loaded-this-boot
- *                    [26]=was-recording latch (rising edge resets the Qp/Sz/Cum trackers) */
+ *                    [26]=was-recording latch (rising edge resets the Qp/Sz/Cum trackers)
+ *                    [27..34]=manual exposure state (see "Manual exposure" below) */
 #define ST   ((volatile uint32_t *)0x80345000u)   /* relocated (was 0x342700; code was creeping up) */
 #define MENU ((volatile uint32_t *)0x80345020u)
 #define STALL_THRESH 20         /* OnTimer ticks without a new frame before the REC STALLED warning.
@@ -132,11 +136,12 @@ extern uint32_t resolve(uint32_t h);                       /* 0x80006500 */
 #define CUR_BR   4       /* bitrate multiplier x1..x4 */
 #define CUR_AST  5       /* reel-end auto-stop ON/OFF toggle */
 #define CUR_QP   6       /* Qp floor: "-" (off) or 15..22 */
-#define CUR_YEAR 7
-#define CUR_MON  8
-#define CUR_DAY  9
-#define CUR_RST  10      /* "Reset" -- own row, last in the cycle */
-#define CUR_MAX  10
+#define CUR_EXP  7       /* exposure: Auto / Manual, on the Exp row */
+#define CUR_YEAR 8
+#define CUR_MON  9
+#define CUR_DAY  10
+#define CUR_RST  11      /* "Reset" -- own row, last in the cycle */
+#define CUR_MAX  11
 /* Set to 0 to draw ONLY in preview -> a ZERO-DRAWING window during recording.
  * Set back to 1 to restore the normal OSD. */
 #define OSD_DRAW_WHILE_REC 1
@@ -156,6 +161,65 @@ extern uint32_t resolve(uint32_t h);                       /* 0x80006500 */
 
 static uint32_t rd(uint32_t a) { return *(volatile uint32_t *)a; }
 static void wr(uint32_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
+
+/* ---- Manual exposure --------------------------------------------------------------------------------
+ * Why: on dense film the stock AE runs above 1/120 s, where it only allows 1/120 s steps (8333, 16666
+ * us). When the right value falls between two steps it flips between them: one-stop pumping. Manual
+ * exposure holds one value instead.
+ * Stock AE (3A callbacks: init 0x802b683c, per-frame 0x802b6a08) applies its result through the sensor
+ * driver: SET_EXP(0, exposure_us, ...) @0x801df99c and SET_GAIN(0, gain_x100, ...) @0x801df88c. The
+ * build swaps the jal target at those 8 call sites for the wrappers below (plain C, normal ABI). In
+ * manual they substitute our values; in auto they only record what AE asked for, so manual starts
+ * from the current picture. Persisted in NVM words 16/17 (load_ae_once); Reset or Left/- past the
+ * minimum returns to auto. Reel-end detection is held off in manual (it reads the AE result).
+ *   MENU[27] = 1 manual   MENU[28] = manual exposure (us)   MENU[29] = manual gain (x100)
+ *   MENU[30] = last AE exposure   MENU[31] = last AE gain   MENU[32] = restore-AE bits after manual
+ *   MENU[33] = loaded-from-NVM-this-boot   MENU[34] = reel-end grace countdown after manual */
+#define AE_LOCK  1
+#define AE_EXP_MIN 20u
+#define AE_GRACE   40u      /* encoded frames (~20 s) after Manual->Auto before reel-end detection resumes:
+                             * in manual the AE result drifts to an extreme (open loop), and until it
+                             * settles again it can look like "no film" (seen on device) */
+#define AE_EXP_MAX 33000u   /* ~one frame at 30 Hz. Dense film runs AE at 8000-16000 us (forum report) */
+extern uint32_t set_exp(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3);    /* 0x801df99c */
+extern uint32_t set_gain(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3);   /* 0x801df88c */
+/* The per-frame AE (0x802b6a08, every 3rd frame) only WRITES the sensor when its own result changed:
+ * it ORs "changed" bits into 0x80f8245c (bit0 exposure, bit1 gain), read right after these calls, and
+ * the apply functions 0x802b620c / 0x802b61b4 write the register only if the bit is set. AE settled ->
+ * no bits -> our value would never reach the sensor (seen on device: only the first press took effect).
+ * So: in manual, set the bit ourselves; back in auto (MENU[32] bits), set it once to restore AE's own. */
+#define AE_FLAGS 0x80f8245cu
+/* In manual the AE still CALCULATES each cycle (0x801e4854, called only from 0x802b6bdc). It sees the
+ * picture at OUR exposure, and if that is darker than it wants, its result climbs without limit: open
+ * loop. Besides exposure/gain the result has a 3rd field (0x80f8258c, mode 1..4), applied via
+ * 0x802b60fc -> 0x80248124, which pauses an engine, switches its mode and resumes it. Suspected cause of
+ * the field stalls (FW 274, dense film, manual ~520 us, REC STALLED after minutes). AE_FREEZE_CALC 1 =
+ * skip the calculation in manual: AE state stays frozen at the values from when manual was entered. */
+#ifndef AE_FREEZE_CALC
+#define AE_FREEZE_CALC 1
+#endif
+#ifndef AE_DIAG
+#define AE_DIAG 0          /* 1 = Gain row shows "w:<AE's own exposure> m:<mode>" while in manual */
+#endif
+extern uint32_t ae_calc(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4);   /* 0x801e4854 */
+#if AE_LOCK && AE_FREEZE_CALC
+uint32_t ae_calc_hook(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4) {
+    if (MENU[27]) return 0;              /* manual: no AE update (caller ignores the return value) */
+    return ae_calc(a0, a1, a2, a3, a4);
+}
+#endif
+#if AE_LOCK
+uint32_t ae_exp_hook(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    if (MENU[27]) { a1 = MENU[28]; wr(AE_FLAGS, rd(AE_FLAGS) | 1u); }
+    else { MENU[30] = a1; if (MENU[32] & 1u) { wr(AE_FLAGS, rd(AE_FLAGS) | 1u); MENU[32] &= ~1u; } }
+    return set_exp(a0, a1, a2, a3);
+}
+uint32_t ae_gain_hook(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    if (MENU[27]) { a1 = MENU[29]; wr(AE_FLAGS, rd(AE_FLAGS) | 2u); }
+    else { MENU[31] = a1; if (MENU[32] & 2u) { wr(AE_FLAGS, rd(AE_FLAGS) | 2u); MENU[32] &= ~2u; } }
+    return set_gain(a0, a1, a2, a3);
+}
+#endif
 
 /* D setdate() @0x80069ea0 (fingerprinted from A/B/C's 0x693a0, real offset +0xB00; writes RTC HW regs
  * 0xb0060010/04; sig (year,month,day,0), returns 0 on success). Verified on device build 170: stamps
@@ -358,6 +422,7 @@ static void handle_buttons(int rec) {
         return;
     }
     if (MENU[0] == CUR_AST) {                    /* auto-stop: any adjust toggles ON <-> OFF */
+        if (MENU[27]) { MENU[8] = 0; return; }   /* manual exposure: shown "off (M)", choice kept for Auto */
         MENU[22] = MENU[22] ? 0u : 1u;
         wr(NVM_AST, MENU[22] ? 0u : 1u);         /* persist DISABLE flag (0=on, 1=off) */
         MENU[8] = 0;                             /* no sel-delta for a toggle */
@@ -372,7 +437,32 @@ static void handle_buttons(int rec) {
         MENU[22] = 1; wr(NVM_AST, 0);            /* reel-end auto-stop back to default ON */
         MENU[20] = QPF_DEF; wr(NVM_QPF, QPF_DEF); /* Qp floor back to OFF */
         MENU[24] = BR_DEF; wr(NVM_BR, BR_DEF);   /* bitrate back to default x4 */
+        if (MENU[27]) { MENU[32] = 3u; MENU[34] = AE_GRACE; }   /* AE back to auto: re-send AE's own
+                                                                  * exp+gain once, let AE settle first */
+        MENU[27] = 0; wr(NVM_AEXP, 0u);
         MENU[8] = 0;                             /* no delta shown for RST */
+        return;
+    }
+    if (MENU[0] == CUR_EXP) {                    /* exposure: first press -> Manual at the current values */
+        if (MENU[27] && dir < 0 && MENU[28] <= AE_EXP_MIN) {   /* past the bottom -> back to Auto */
+            MENU[27] = 0; MENU[32] = 3u; MENU[8] = 0; MENU[34] = AE_GRACE;
+            wr(NVM_AEXP, 0u);                    /* persist Auto */
+            return;
+        }
+        if (!MENU[27]) {
+            uint32_t e = MENU[30], g = MENU[31];
+            if (e < AE_EXP_MIN || e > AE_EXP_MAX) e = rd(0x80f82584u);
+            if (e < AE_EXP_MIN || e > AE_EXP_MAX) e = 500u;
+            if (g < 100u || g > 1600u) g = 100u;
+            MENU[28] = e; MENU[29] = g; MENU[27] = 1;
+        }
+        uint32_t e = MENU[28];
+        if (coarse) e = (dir > 0) ? e * 2u : e / 2u;          /* Left/Right: one stop */
+        else        e = (dir > 0) ? e + (e >> 4) + 1u : e - (e >> 4) - 1u;   /* +/-: ~6% */
+        if (e < AE_EXP_MIN) e = AE_EXP_MIN; if (e > AE_EXP_MAX) e = AE_EXP_MAX;
+        MENU[28] = e;
+        wr(NVM_AEXP, e); wr(NVM_AGAIN, MENU[29]);   /* persist */
+        MENU[8] = 0;
         return;
     }
     if (MENU[0] >= CUR_YEAR && MENU[0] <= CUR_DAY) {  /* date fields: YEAR / MON / DAY */
@@ -412,6 +502,15 @@ static void load_wb_once(void) {
     uint32_t r = rd(NVM_R), g = rd(NVM_G), b = rd(NVM_B);
     if (WB_OK(r) && WB_OK(g) && WB_OK(b)) { MENU[3] = r; MENU[4] = g; MENU[5] = b; MENU[1] = 1; }   /* else: stock WB */
     MENU[6] = 1;
+}
+/* restore a persisted manual exposure once per boot (MENU[33] = loaded). Anything out of range = Auto. */
+static void load_ae_once(void) {
+    if (MENU[33]) return;
+    MENU[33] = 1;
+    uint32_t e = rd(NVM_AEXP), g = rd(NVM_AGAIN);
+    if (e >= AE_EXP_MIN && e <= AE_EXP_MAX) {
+        MENU[28] = e; MENU[29] = (g >= 100u && g <= 1600u) ? g : 100u; MENU[27] = 1;
+    }
 }
 /* restore persisted date once per boot + apply via setdate (scratch resets on power-cycle). Called
  * from osd_main (camera pipeline up -> RTC driver ready). Defaults to 2026-01-01 if NVM is unset. */
@@ -503,6 +602,7 @@ static void rend_p0(volatile uint8_t *p0, int clear) {
     int SX = 764, X, Y;
     int wrv = rd(WB_R), wgv = rd(WB_G), wbv = rd(WB_B);
     int ex = rd(0x80f82594u), gn = rd(0x80f82598u);
+    if (MENU[27]) { ex = (int)MENU[28]; gn = (int)MENU[29]; }   /* manual: show what we apply */
     int resw = rd(0x80ddc718u), resh = rd(0x80ddc71cu);
     uint32_t ctx = rd(0x80e974dcu);
     int rec = (ctx >= 0x80000000u && ctx < 0xb0000000u);
@@ -548,9 +648,10 @@ static void rend_p0(volatile uint8_t *p0, int clear) {
         X = cbr(p0, X, Y, live && MENU[0] == CUR_BR, "[", CYN);
         X = cstr(p0, X, Y, "x", CYN); X = cnum(p0, X, Y, (int)MENU[24], CYN);
         cbr(p0, X, Y, live && MENU[0] == CUR_BR, "]", CYN); Y += 13;
-        X = cstr(p0, SX, Y, "ASt: ", CYN);
+        /* manual exposure -> reel-end detection can't work (it reads the AE): say so, keep the saved choice */
+        X = cstr(p0, SX, Y, (MENU[27] && live && MENU[0] == CUR_AST) ? "ASt:" : "ASt: ", CYN);   /* 13-char fit */
         X = cbr(p0, X, Y, live && MENU[0] == CUR_AST, "[", CYN);
-        X = cstr(p0, X, Y, MENU[22] ? "ON" : "OFF", CYN);
+        X = cstr(p0, X, Y, MENU[27] ? "off (M)" : (MENU[22] ? "ON" : "OFF"), CYN);
         cbr(p0, X, Y, live && MENU[0] == CUR_AST, "]", CYN); Y += 13;
         X = cstr(p0, SX, Y, "Qp:", QPC); X = cnum(p0, X, Y, qp, QPC);   /* current(driven) / lowest-this-recording */
         X = cstr(p0, X, Y, "/", QPC);
@@ -570,12 +671,22 @@ static void rend_p0(volatile uint8_t *p0, int clear) {
         /* cumulative encoded bytes this recording, in MiB -- does a freeze cluster at a byte boundary? */
         X = cstr(p0, SX, Y, "Cum:", QPC); X = cnum(p0, X, Y, (int)(rd(CUMB_ADDR) >> 20), QPC);
         cstr(p0, X, Y, "M", QPC); Y += 13;
-        X = cstr(p0, SX, Y, "Gain:", CYN); cnum(p0, X, Y, gn, CYN); Y += 13;
-        X = cstr(p0, SX, Y, "Exp:", CYN); X = cnum(p0, X, Y, ex, CYN); cstr(p0, X, Y, "us A", CYN); Y += 13;
+#if AE_DIAG
+        if (MENU[27]) { X = cstr(p0, SX, Y, "w:", CYN); X = cnum(p0, X, Y, (int)rd(0x80f82584u), CYN);
+                        X = cstr(p0, X, Y, " m:", CYN); cnum(p0, X, Y, (int)rd(0x80f8258cu), CYN); Y += 13; }
+        else
+#endif
+        { X = cstr(p0, SX, Y, "Gain:", CYN); cnum(p0, X, Y, gn, CYN); Y += 13; }
+        X = cstr(p0, SX, Y, "Exp:", CYN);              /* max 12 chars: "Exp:[16666] M" */
+        if (live && MENU[0] == CUR_EXP) {
+            X = cstr(p0, X, Y, "[", CYN); X = cnum(p0, X, Y, ex, CYN); X = cstr(p0, X, Y, "]", CYN);
+            cstr(p0, X, Y, MENU[27] ? " M" : " A", CYN);
+        } else { X = cnum(p0, X, Y, ex, CYN); cstr(p0, X, Y, MENU[27] ? "us M" : "us A", CYN); }
+        Y += 13;
     } else {
         X = cstr(p0, SX, Y, "Res:", CYN); X = cnum(p0, X, Y, resw, CYN); X = cstr(p0, X, Y, "x", CYN); cnum(p0, X, Y, resh, CYN); Y += 13;
         X = cstr(p0, SX, Y, "Gain:", CYN); cnum(p0, X, Y, gn, CYN); Y += 13;
-        X = cstr(p0, SX, Y, "Exp:", CYN); X = cnum(p0, X, Y, ex, CYN); cstr(p0, X, Y, "us", CYN); Y += 13;
+        X = cstr(p0, SX, Y, "Exp:", CYN); X = cnum(p0, X, Y, ex, CYN); cstr(p0, X, Y, MENU[27] ? "us M" : "us", CYN); Y += 13;
     }
     /* Date LAST in the list (persisted; applied via setdate). Shown in preview + recording. */
     cstr(p0, SX, Y, "Date:", CYN); Y += 13;
@@ -651,6 +762,7 @@ int osd_main(void *a0, void *a1, void *a2, void *a3) {
     load_ast_once();                     /* restore persisted reel-end auto-stop choice */
     load_qpf_once();                     /* restore persisted Qp floor (default OFF) */
     load_br_once();                      /* restore persisted bitrate multiplier */
+    load_ae_once();                      /* restore persisted manual exposure */
     { uint32_t f = MENU[20]; if (f < QPF_MIN || f > QPF_MAX) f = QPF_STOCK; wr(QPFLOOR_ADDR, f); }
                                          /* OFF -> write the stock 10 so the stub is inert */
     { uint32_t b = MENU[24]; if (!BR_OK(b)) b = BR_DEF; wr(BR_VAL_ADDR, b); }
@@ -811,7 +923,11 @@ void after_ontimer(void) {
 #endif
             ST[0] = frm; ST[1] = 0; ST[4] = 0;
             uint32_t exp = rd(EXP_ADDR);
-            if (exp >= ARM_EXP) { wr(BLK_ARMED, 1); wr(BLK_COUNT, 0); }              /* real footage */
+            if (MENU[27] || MENU[34]) {          /* manual exposure, or AE still settling after it: the AE */
+                wr(BLK_COUNT, 0);                /* value means nothing -> hold the blank run at zero */
+                if (!MENU[27]) MENU[34]--;
+            }
+            else if (exp >= ARM_EXP) { wr(BLK_ARMED, 1); wr(BLK_COUNT, 0); }              /* real footage */
             else if (exp < BLANK_EXP) { if (rd(BLK_ARMED)) wr(BLK_COUNT, rd(BLK_COUNT) + 1); }  /* blank */
             else wr(BLK_COUNT, 0);                                                   /* mid-range: reset run */
         } else {              /* CARD-STALL: counter frozen. Warn (CARD SLOW) at STALL_THRESH, then clean
@@ -833,8 +949,10 @@ void after_ontimer(void) {
          * faded/thin film whose bright, low-exposure frames look like "no film" to the detector. The
          * CARD-STALL path above stays ALWAYS on (it keys off the write buffer, not exposure, so faded
          * film never trips it, and it's a genuine crash/overrun safety stop). */
-        if (MENU[22] && rd(BLK_ARMED) && rd(BLK_COUNT) >= BLANK_WARN) show_blank = 1;
-        if (MENU[22] && rd(BLK_ARMED) && rd(BLK_COUNT) >= BLANK_STOP && !ST[6]) {
+        /* Manual exposure: the AE value the detector reads no longer tracks what the
+         * sensor sees -> reel-end detection off (stall guard unaffected). */
+        if (MENU[22] && !MENU[27] && rd(BLK_ARMED) && rd(BLK_COUNT) >= BLANK_WARN) show_blank = 1;
+        if (MENU[22] && !MENU[27] && rd(BLK_ARMED) && rd(BLK_COUNT) >= BLANK_STOP && !ST[6]) {
             ST[6] = 1; ST[7]++; wr(BLK_DONE, 1);
             if (p0) draw_stop_called(p0, 1u);   /* mark BEFORE the call (it can block) */
             FULL_STOP(); return;                /* BLK_DONE persists the result message in preview */

@@ -13,7 +13,9 @@ Everything here refers to videodoctor's Type D base, unpacked `vd-FWDV280-D.rbn`
   **scratch area at `0x80345000`**, which holds runtime state and is reset at every boot. The build
   checks both.
 - Firmware functions are called through fixed addresses (`orig` = stock WB `0x802b7b7c`,
-  `resolve` = display-pool getter `0x80006500`, passed as `--defsym` at link time).
+  `resolve` = display-pool getter `0x80006500`, `set_exp`/`set_gain` = sensor driver
+  `0x801df99c`/`0x801df88c`, `ae_calc` = per-frame AE calculation `0x801e4854`, passed as `--defsym`
+  at link time).
 - **The unit scans at ~2 frames per second.** The file's 16/18 fps is just its playback rate.
   "Per frame" timings below are per *scanned* frame.
 
@@ -30,6 +32,45 @@ original instruction first.
 | 4 | `0x80241074/78` | `slti a1,s4,10` + `li v1,10` | `j qpfloor_stub` + `nop` | every encoded frame | rebuilds the rate control's `max(cap, 10)` with the menu floor (10 when off, i.e. stock) |
 | 5 | `0x8011e344/48` | `addiu sp,-0xf0` + `sw s8,0xe8(sp)` | `j my_ontimer` + `nop` | movie-window timer, **~2–3 Hz** (measured) | runs the stock OnTimer, then `after_ontimer`: stall detector, reel-end detector, warnings, clean stop, OSD repaint |
 | 6 | `0x8010bc70` | `jal 0x8010c164` (compose blit) | `jal wrap_compose` | every UI compose | runs the real blit, then repaints the OSD if the blit wiped it |
+| 7 | `0x802b6950/6c50/6f10/70d4`, `0x802b697c/6c7c/6f20/70e4` | `jal 0x801df99c` (sensor exposure), `jal 0x801df88c` (sensor gain) | `jal ae_exp_hook`, `jal ae_gain_hook` | every AE update (every 3rd captured frame) | manual exposure: substitute the menu values, else pass through and remember the AE's own |
+| 8 | `0x802b6bdc` | `jal 0x801e4854` (AE calculation, its only caller) | `jal ae_calc_hook` | every AE update | manual exposure: skip the calculation, so the AE result (and the sensor mode) stays frozen |
+
+**Manual exposure (hook 7).** The stock AE is two 3A callbacks: init `0x802b683c` and per-frame
+`0x802b6a08`, which does its work on every 3rd frame. It hands its result to the sensor driver as
+exposure in µs and gain ×100. The wrappers swap in the manual values, then jump straight to the
+original, using no stack.
+
+The per-frame AE only *writes* the sensor when its own result changed. It ORs "changed" bits into
+`0x80F8245C` (bit 0 exposure, bit 1 gain), and the apply functions `0x802b620c`/`0x802b61b4` check them.
+So in manual the wrappers set those bits themselves. Back in Auto, they set them once more, so the AE's
+own value is restored.
+
+**Frozen calculation (hook 8).** The calculation `0x801e4854` fills the result struct `0x80F82580`
+(+4 exposure µs, +8 gain ×100, +0xc sensor mode 1..4). In manual it would run open loop: the picture
+no longer follows its output, so it keeps pushing in one direction and eventually changes the mode
+field. A mode change goes through `0x802b60fc` → `0x80248124`, which pauses an engine, switches the
+mode and resumes it, mid-recording. In the field that stalled recordings after a few minutes (FW 274).
+`ae_calc_hook` returns without calling it while in manual, so the struct keeps the values from the
+moment manual was entered. Back in auto it runs normally again.
+
+Stock AE bookkeeping, for anyone extending this:
+
+| address | meaning |
+|---|---|
+| `0x80F82580` | current result: +4 exposure µs, +8 gain ×100, +0xC sensor mode 1..4 |
+| `0x80F82570` | the previous result (same layout), compared to decide what changed |
+| `0x80F82590` | the copy the getters read; `0x80F82594` (its +4) is the exposure the OSD and reel-end detector use |
+| `0x80F8245C` | "changed" bits: 0 exposure (applied by `0x802b620c`), 1 gain (`0x802b61b4`), 2 mode (`0x802b60fc`, which maps the mode through the table at `0x80DBC520` = {2,3,4,5} and calls `0x80248124`: engine state 5 = paused, switch, state 2 = running) |
+| `0x80F82464` | frame divider: the per-frame callback does its work on every 3rd frame |
+| `0x80F8246C` | set by the init callback |
+
+Why it exists: above 1/120 s, the stock AE only allows whole 1/120 s steps (8333, 16666 µs: 60 Hz
+anti-flicker). On dense film whose right exposure falls between two steps, it flips between them every
+few seconds. Manual exposure bypasses the steps because it substitutes the value at the driver call.
+Not found yet: where the AE snaps to those steps (the `1e6` constants at `0x801e69c8/7efc/811c` are
+frame-rate maths, not it). Removing the snapping would allow a smooth auto mode. The other route is
+0dan0's own histogram AE from A/B/C: his hook point is still in the base (`calc_histogram` at
+`0x8033B700`, called via `0x8033B7F4`), but videodoctor's base stubs it to a counter.
 
 Constant patches (no code):
 
@@ -39,6 +80,15 @@ Constant patches (no code):
 | `0x802b9d0c` | `beq s0,v0` → `b` | 3D noise reduction always on |
 | `0x8006a2c4` | packed epoch constant 2000-01-01 → 1980-01-01 | the RTC can hold dates back to 1980 (FAT's own floor) |
 | `0x80ddc718/1c`, `0x802bfeb0` | *(only `-Resolution native`)* 1600×1200 → 1728×1296, drop the geometry clamp | full film gate |
+| `0x80333948` | boot splash JPEG replaced (not with `-NoSplash`) | build number, date and features at power-on |
+
+**Boot splash.** Stock code shows a plain 864×480 JPEG at `0x80333948` (originally 20,385 bytes,
+"Type D - WIP") before any of the mod runs. Both size getters (`0x80125cf0`/`0x80125d10`) return
+`0x5000`, so a replacement must fit in 20,480 bytes; the build asserts that, and that the original is
+in place. The bytes after it are free up to `0x8033A08C`. `osd_build.py` erases the old text, draws
+the info block with Courier Prime (`tools/fonts/`), and saves at the best JPEG quality that fits, as
+**baseline 4:2:2**: the format of the original, and the only one the boot-time decoder has been
+shown to handle (0dan0's splash tool forces 4:2:2 too). Progressive or 4:2:0 output is untested here.
 
 ## Rules for new hooks
 
@@ -52,7 +102,7 @@ Constant patches (no code):
    instruction in the stub, or, where it is harmless, let it run and redo its effect.
 3. **Stay off the boot and motor-init path.** Hooks at the entry of timing-critical functions freeze the
    unit at boot. Every hook here is in capture, encode or UI code that only runs once the unit is up.
-4. **Every hook must earn its place.** The per-frame paths (1, 4, 6) are hot. Keep them tiny, and
+4. **Every hook must earn its place.** The per-frame paths (1, 4, 6, 7) are hot. Keep them tiny, and
    prefer reading state over writing hardware registers.
 5. Functions differ between Type C and D by a **non-constant** offset. To find a known C function in
    D, search for a byte fingerprint of its body, then check the match with `mipsel-linux-gnu-objdump`.
@@ -90,6 +140,8 @@ a fresh unit. So every value has a safe "unset" meaning, and each one is range-c
 | 13 | `0x80E0ADD8` | reel-end auto-stop **disable** flag (0 = ON, so a fresh unit defaults ON) |
 | 14 | `0x80E0ADDC` | bitrate multiplier. Strict allow-list 1/2/4, so a stale 3 can never load |
 | 15 | `0x80E0ADE0` | Qp floor (0 = off, 15–22) |
+| 16 | `0x80E0ADE4` | manual exposure, µs (20–33000; 0 or out of range = Auto) |
+| 17 | `0x80E0ADE8` | gain held in manual, ×100 (100–1600, else 100) |
 
 **Scratch** at `0x80345000`: `ST[]` (stall state), `MENU[]` at `+0x20` (cursor, live values,
 loaded-once flags). Single words: the fps value at `+0x100`, reel-end detector at `+0x300`, Qp/size
@@ -106,6 +158,23 @@ diagnostics `+0x344…+0x354`. The exact layout is commented in `osdmenu.c`.
 - At x4 the rate control naturally runs at about Qp 15. **A floor above ~16 pins it there for the whole
   recording.** It then can never reach its target, the encoder saturates, and recording stalls for
   seconds at a time. That is why the floor is off by default.
+- **Very large frames at x4 in manual exposure.** One field report (FW 279, floor off, gain 1×): a single
+  extremely grainy, bright shot stalls the recording at the same spot on the film every time, while long
+  reels go through fine. Tested on that spot:
+
+  | bitrate | exposure | result |
+  |---|---|---|
+  | x2 | manual | OK |
+  | x4 | auto | OK |
+  | x4 | manual (466 and 932 µs) | stalls, 3 out of 3 |
+
+  At the stall the OSD shows Qp at 10 (current and lowest) and the largest frame at 496–746 KB, where
+  about 250 KB is normal at x4 / 16 fps. At x4 the budget lets the rate control go all the way down to
+  the hard floor of 10. On this content the frames at Qp 10 get too big for the encoder. At x2 Qp stays
+  higher, and in auto the AE darkens the bright shot, so the frames stay smaller. The card is not the
+  limit: at ~2 scanned frames per second even 746 KB frames are only ~1.5 MB/s.
+  Workaround: x2, or auto exposure, for that reel. Open: whether QpF 15 avoids it at x4 (untested since
+  the FW 256 and FW 279 fixes), and a proper fix that caps frame size without pinning Qp.
 
 ## OSD drawing
 
@@ -135,3 +204,8 @@ worst normal gap is 2 ticks.
 - **Reel end:** armed only after real footage (exposure ≥ 320 µs), so the start leader can't trigger
   it. Then 20 consecutive encoded frames with exposure < 150 µs (bare backlight) → clean stop.
   White footage dips to ~158 µs at most briefly.
+- **Reel end in manual exposure:** off. The detector reads the AE result, which in manual no longer
+  follows the picture: hook 8 keeps it frozen at the value from when manual was entered. The blank run is held at 0, the menu shows
+  `ASt: off (M)`, and after switching back to Auto detection waits 40 encoded frames (~20 s) for the AE
+  to settle. A manual-mode detector would need a picture-brightness signal (the AE's scene metric at
+  `0x80F823AC` is a candidate) and measurements on real footage.

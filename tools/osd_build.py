@@ -15,8 +15,9 @@ Options:
     KODAK_RES      std | native   std = 1600x1200 (default), native = stock 1728x1296 incl. sprocket holes
     KODAK_NOHOOKS  1              diagnostic: constant patches only, none of the mod's code runs
     KODAK_ANYBASE  1              skip the base SHA256 check (for porting to another base -- expect asserts)
-    KODAK_BUILD    <N>            build number for the boot splash ("Type D - FW <N>"); set by build.ps1
-    KODAK_SPLASH   0              keep the original "Type D - WIP" splash (default 1 = write the build number)
+    KODAK_BUILD    <N>            build number for the boot splash ("Vers: FW <N> Type D"); set by build.ps1
+    KODAK_DATE     YYYY-MM-DD     build date for the boot splash; set by build.ps1 (-Date, default today)
+    KODAK_SPLASH   0              keep the original "Type D - WIP" splash (default 1 = info splash)
 
 Every patch asserts the ORIGINAL instruction first, so a wrong base fails loudly at build time instead of
 producing firmware that hangs at boot.
@@ -112,16 +113,31 @@ if res == "native":
     patch(img, 0x2bfeb0, 0x0c0cebb1, 0x24050030, "geometry")     # drop the 1600 clamp hook
 print(f"resolution: {res}")
 
-# Boot splash: "Type D - WIP" -> "Type D - FW <N>". The splash is a plain 864x480 JPEG that stock code shows
-# before any of the mod runs, so it proves WHICH file was flashed even if the mod itself never starts.
+# Boot splash: "Type D - WIP" -> a feature summary with the build number and date (layout after 0dan0's
+# A/B/C boot screens). The splash is a plain 864x480 JPEG that stock code shows before any of the mod
+# runs, so it proves WHICH file was flashed even if the mod itself never starts.
 # Both splash size getters (0x80125cf0/0x80125d10) return 0x5000, so the new JPEG must fit in 20480 bytes;
 # the bytes after the old JPEG are free up to 0x33a08c. Needs Pillow; KODAK_SPLASH=0 keeps the original.
+# Font: Courier Prime (SIL OFL 1.1, tools/fonts/OFL.txt), shipped in the repo so every machine draws the
+# same pixels. At 20 px it is a 12 px character grid.
 SPLASH_OFF, SPLASH_LEN, SPLASH_MAX = 0x333948, 20385, 0x5000
 SPLASH_SHA256 = "60cdc9b2ad876beb343d7d2f84e1d2f5ad5f06cd5665945e760c99bc3e4b3af7"
+SPLASH_FONT = os.path.join(ROOT, "tools", "fonts", "CourierPrime-Regular.ttf")
+SPLASH_FONT_SHA256 = "72f793376f8e2841656bf21d77a5de010f2929bd6956a22ee848ad0c7eb978af"
 if os.environ.get("KODAK_SPLASH", "1") == "1":
     build_no = os.environ.get("KODAK_BUILD")
     if not build_no:
         die("KODAK_BUILD not set (build.ps1 sets it from -Build)")
+    build_date = os.environ.get("KODAK_DATE", "")
+    import re
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", build_date):
+        die(f"KODAK_DATE must be YYYY-MM-DD (build.ps1 sets it from -Date), got '{build_date}'")
+    try:
+        font_bytes = open(SPLASH_FONT, "rb").read()
+    except OSError:
+        die(f"splash font missing: {SPLASH_FONT}")
+    if hashlib.sha256(font_bytes).hexdigest() != SPLASH_FONT_SHA256:
+        die("tools/fonts/CourierPrime-Regular.ttf is not the expected file")
     try:
         import io
         from PIL import Image, ImageDraw, ImageFont
@@ -135,9 +151,25 @@ if os.environ.get("KODAK_SPLASH", "1") == "1":
     pic = Image.open(io.BytesIO(old)).convert("RGB")
     draw = ImageDraw.Draw(pic)
     draw.rectangle([425, 170, 659, 213], fill=(249, 185, 0))             # erase "Type D - WIP"
-    font = ImageFont.load_default(size=34)                               # Pillow's bundled font: same on every machine
-    draw.text((431, 172), f"Type D - FW {build_no}", font=font, fill=(255, 255, 255),
-              stroke_width=1, stroke_fill=(255, 255, 255))               # stroke = bold, like the original
+    font = ImageFont.truetype(io.BytesIO(font_bytes), 20)
+    res_txt = "Encode 1728x1296 (native)" if res == "native" else "Encode 1600x1200 (cropped)"
+    lines = [
+        "Res : " + res_txt,
+        "B/R : x1/x2/x4, default x4 ~32Mb/s",
+        "WB  : Manual RGB gains, live",
+        "Exp : Auto or Manual",
+        "Feat: Auto stop at reel end,",
+        "      Stall guard, FilmGrain off,",
+        "      3DNR on, FPS: 16 or 18,",
+        "      Recording date, OSD stats",
+        "      In REC: arrows +/- for menu",
+        "", "", "",                                                      # room for future lines
+        f"Vers: FW {build_no} Type D  Date: {build_date.replace('-', '/')}",
+    ]
+    y = 152                                                              # first line level with the logo top
+    for s in lines:
+        draw.text((388, y), s, font=font, fill=(130, 95, 0))             # 0dan0's dark ochre text
+        y += 23
     jpg = None
     for q in range(95, 20, -1):                                          # best quality that fits the slot
         # subsampling=1 (4:2:2) and baseline: the same format as the original splash -- the boot-time
@@ -149,7 +181,7 @@ if os.environ.get("KODAK_SPLASH", "1") == "1":
         die("could not fit the splash JPEG into 20480 bytes")
     img[SPLASH_OFF:SPLASH_OFF + SPLASH_MAX] = bytes(SPLASH_MAX)           # clear the slot, then write
     img[SPLASH_OFF:SPLASH_OFF + len(jpg)] = jpg
-    print(f"splash: 'Type D - FW {build_no}' ({len(jpg)} bytes, JPEG quality {q})")
+    print(f"splash: info, FW {build_no}, {build_date} ({len(jpg)} bytes, JPEG quality {q})")
 else:
     print("splash: original ('Type D - WIP')")
 
@@ -229,6 +261,21 @@ if "my_ontimer" in syms:
 if "wrap_compose" in syms:
     patch(img, 0x10bc70, jal(0x8010c164), jal(syms["wrap_compose"]), "compose blit")
     print("hook: compose blit -> wrap_compose")
+
+# 7. Manual exposure: the sensor exposure/gain calls inside the two stock AE callbacks (init 0x802b683c,
+#    per-frame 0x802b6a08) -> ae_exp_hook / ae_gain_hook (substitute the manual values, else pass through).
+#    Only the jal target changes; each delay slot (argument setup) still runs before the wrapper.
+if "ae_exp_hook" in syms and "ae_gain_hook" in syms:
+    for off in (0x2b6950, 0x2b6c50, 0x2b6f10, 0x2b70d4):
+        patch(img, off, jal(0x801df99c), jal(syms["ae_exp_hook"]), "AE set_exp")
+    for off in (0x2b697c, 0x2b6c7c, 0x2b6f20, 0x2b70e4):
+        patch(img, off, jal(0x801df88c), jal(syms["ae_gain_hook"]), "AE set_gain")
+    print("hook: AE set_exp/set_gain (8 sites) -> ae_exp_hook / ae_gain_hook")
+# 8. Manual exposure: the per-frame AE calculation (only caller of 0x801e4854) -> ae_calc_hook, which skips
+#    it in manual so the AE state can't run away (open loop). The delay slot (5th arg store) still runs.
+if "ae_calc_hook" in syms:
+    patch(img, 0x2b6bdc, jal(0x801e4854), jal(syms["ae_calc_hook"]), "AE calc")
+    print("hook: AE calc -> ae_calc_hook (frozen in manual)")
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 open(OUT, "wb").write(img)

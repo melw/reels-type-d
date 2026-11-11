@@ -23,6 +23,11 @@ SOFTWARE.
 --------------------------------------------------------------------------------
 Third-party material
 
+tools/fonts/CourierPrime-Regular.ttf is Courier Prime, Copyright 2015 The Courier
+Prime Project Authors (https://github.com/quoteunquoteapps/CourierPrime). It is
+licensed under the SIL Open Font License 1.1, see tools/fonts/OFL.txt. It is not
+covered by the MIT licence above.
+
 src/font_data.h contains the 7x12 bitmap font from 0dan0's Kodak Reels project
 (https://github.com/0dan0/4reels). It is the font table at 0x8033A800 in that
 project's firmware images, which its MIT-licensed hist module renders with. The
