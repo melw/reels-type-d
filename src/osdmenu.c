@@ -87,10 +87,9 @@ extern uint32_t resolve(uint32_t h);                       /* 0x80006500 */
                                  * harmless hiccup = 2 ticks) */
 #define MOTOR_STOP_THRESH 30    /* ticks before the clean auto-stop, ~12 s. */
 #define MOTOR_STOP_ADDR 0x80ddc670u  /* 0dan0's CORRECTED motor-stop (page 14; 0x80ddb670 was a typo) */
-#define DELTA_SHOW 12           /* osd_main calls the sel-line adjust value stays (~0.4s @ ~30 Hz) */
-#define REC_LATCH 4             /* osd_main calls the "recording" gate survives w/o a frm advance;
-                                 * covers the capture-vs-encode cadence gap (~30 vs ~18 fps) so
-                                 * buttons poll EVERY call in recording, yet decays fast in preview */
+#define DELTA_SHOW 12           /* osd_main calls the sel-line adjust value stays (~2 s: osd_main runs
+                                 * only ~0-8 times a second, measured FW 289) */
+#define REC_LATCH 4             /* osd_main calls the "recording" gate survives w/o a frm advance */
 /* ---- RC min-Qp clamp: off by default ----------------
  * The clamp existed to stop the rate control reaching Qp<=16, believed to crash the encoder. That
  * diagnosis was WRONG: the hard freeze was `jr $k1` in our OnTimer trampoline. Evidence it is
@@ -206,6 +205,67 @@ extern uint32_t ae_calc(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint
 uint32_t ae_calc_hook(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4) {
     if (MENU[27]) return 0;              /* manual: no AE update (caller ignores the return value) */
     return ae_calc(a0, a1, a2, a3, a4);
+}
+#endif
+/* Kodak zoom bug fix (colour bars when zooming out with the frame position near an edge). Runs from
+ * after_ontimer: the movie window's OnTimer, the UI context where the clean auto-stop's synchronous send
+ * already works. The stock "apply" 0x8011eaa0 sync-sends event 0x04000228 (case 3: preview restart). */
+#ifndef ZOOM_FIX
+#define ZOOM_FIX 1
+#endif
+#ifndef FRAME_DIAG
+#define FRAME_DIAG 0       /* 1 = test builds: frame-adjust state (zoom, film type, X/Y) + input-rate counters
+                            * under the FW tag (they overlap the top of the warning box) */
+#endif
+#if ZOOM_FIX
+extern void fa_apply(void);              /* 0x8011eaa0 */
+#define ZREAPPLY 0x80345360u             /* scratch: 1 = out of range seen on the previous tick */
+#define DG_CALLS 0x80345368u             /* scratch (FRAME_DIAG): osd_main calls since the last OnTimer tick */
+#define DG_CPT   0x8034536cu             /* scratch (FRAME_DIAG): osd_main calls in the last full tick */
+#define DG_HCUR  0x80345370u             /* scratch (FRAME_DIAG): highest hold value in the current press */
+#define DG_HLAST 0x80345374u             /* scratch (FRAME_DIAG): highest hold value of the last press */
+#define FA_TYPE  0x80E09F24u             /* guiFlimType: 0/1 = the two film types */
+#define FA_PARAMS 0x80E09F3Cu            /* sFrameParams[type], 12 bytes: +0 DzoomIdx, +4 Offset_X, +8 Offset_Y */
+extern void fa_set_x(uint32_t type, int v);   /* 0x801263a8: saved UI setting */
+extern void fa_set_y(uint32_t type, int v);   /* 0x8012640c */
+/* Measured on device (FW 281-285): the usable offset range shrinks by 2 per zoom step below Z3 --
+ * |offset| <= 18 + 2*Z, i.e. 24/22/20/18 at Z3/2/1/0. The stock code silently ignores offsets past that
+ * limit (keeps the last valid window position), but a zoom-out never re-checks the position, so an offset
+ * that was valid at the old zoom pushes the window off the sensor. Re-applying the same value (FW 284) or a
+ * 1-step nudge (FW 285) doesn't help; changing the offset INTO the valid range does. So keep the stored
+ * offsets inside the limit: clamp + apply, from the UI-context OnTimer, never while recording, and only once
+ * the value has been out of range for 2 ticks (lets the zoom's own preview restart finish first). This also
+ * repairs a bad state saved from an earlier session. */
+static void fa_put(uint32_t t, int x, int y) {
+    volatile int *p = (volatile int *)(FA_PARAMS + t * 12u);
+    p[1] = x; p[2] = y; fa_set_x(t, x); fa_set_y(t, y); fa_apply();
+}
+static int fa_lim(int v, int l) { return v > l ? l : (v < -l ? -l : v); }
+static int fa_limit_for(int z) { return (z >= 0 && z < 3) ? 18 + 2 * z : 24; }
+/* Hooked in place of the zoom handler's apply call (0x80114ddc): the handler has already stored the new
+ * zoom step, so clamp the offsets to its limit BEFORE the one stock apply. The preview restart then starts
+ * from a valid position -- no corrupt flash. Runs in the UI task, where this apply is normally called. */
+void zoom_apply_hook(void) {
+    uint32_t t = *(volatile uint32_t *)FA_TYPE;
+    if (t <= 1u) {
+        volatile int *p = (volatile int *)(FA_PARAMS + t * 12u);
+        int l = fa_limit_for(p[0]), x = fa_lim(p[1], l), y = fa_lim(p[2], l);
+        if (x != p[1]) { p[1] = x; fa_set_x(t, x); }
+        if (y != p[2]) { p[2] = y; fa_set_y(t, y); }
+    }
+    fa_apply();
+}
+static void zoom_fix_tick(int recording) {
+    uint32_t t = *(volatile uint32_t *)FA_TYPE;
+    volatile int *p; int l, x, y;
+    if (recording || t > 1u) { *(volatile uint32_t *)ZREAPPLY = 0; return; }
+    p = (volatile int *)(FA_PARAMS + t * 12u);
+    l = fa_limit_for(p[0]);
+    x = fa_lim(p[1], l); y = fa_lim(p[2], l);
+    if (x == p[1] && y == p[2]) { *(volatile uint32_t *)ZREAPPLY = 0; return; }
+    if (*(volatile uint32_t *)ZREAPPLY < 1u) { *(volatile uint32_t *)ZREAPPLY = 1u; return; }   /* 1st tick: wait */
+    *(volatile uint32_t *)ZREAPPLY = 0;
+    fa_put(t, x, y);
 }
 #endif
 #if AE_LOCK
@@ -380,14 +440,38 @@ static int cfix(volatile uint8_t *p0, int X, int Y, int v, int nd, uint8_t col) 
     return X;
 }
 
-/* --- menu input: edge-detected, recording-only --- */
+/* --- menu input: recording-only ---
+ * osd_main runs only ~0-8 times a second (measured, FW 289), so polling the live key state missed quick
+ * taps that began and ended between two calls. Instead, count presses where the stock key driver
+ * (0x8023af10) reports them: it calls the function pointer at KEY_CB as cb(1, 1, newlyPressedBits) once
+ * per debounced press. We put key_cb_hook in that pointer (re-checked every osd_main call), count the
+ * press, and pass the call on unchanged. handle_buttons then replays every counted press. */
+#define KEY_CB   0x80E8B7E0u            /* stock key-event callback pointer */
+#define KCB_ORIG 0x80345378u            /* scratch: the stock callback we wrapped */
+#define KQ       ((volatile uint32_t *)0x80345380u)   /* scratch: pending presses per key, 6 words */
+static const uint32_t kq_bits[6] = { 0x001, 0x002, 0x004, 0x008, 0x100, 0x200 };  /* Up Dn L R - + */
+uint32_t key_cb_hook(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    uint32_t (*orig)(uint32_t, uint32_t, uint32_t, uint32_t) =
+        (uint32_t (*)(uint32_t, uint32_t, uint32_t, uint32_t))rd(KCB_ORIG);
+    if (a1 == 1u) { int i; for (i = 0; i < 6; i++) if (a2 & kq_bits[i]) KQ[i]++; }
+    return orig ? orig(a0, a1, a2, a3) : 0u;
+}
+static void key_install(void) {
+    uint32_t cur = rd(KEY_CB);
+    if (cur && cur != (uint32_t)key_cb_hook) { wr(KCB_ORIG, cur); wr(KEY_CB, (uint32_t)key_cb_hook); }
+}
+static void do_button(uint32_t code);
 static void handle_buttons(int rec) {
-    uint32_t code = rd(BTN_CODE), hold = rd(BTN_HOLD);
-    if (!rec) { MENU[2] = 0; return; }        /* menu only during recording */
-    if (hold == 0) { MENU[2] = 0; return; }   /* released -> re-arm */
-    if (hold < 2) return;                     /* debounce */
-    if (MENU[2]) return;                      /* already acted on this press */
-
+    int i;
+    key_install();
+    for (i = 0; i < 6; i++) {
+        uint32_t n = KQ[i];
+        if (!n) continue;
+        KQ[i] -= n;                               /* keep any press that lands while we work */
+        if (rec) while (n--) do_button(kq_bits[i]);   /* outside recording: presses are dropped */
+    }
+}
+static void do_button(uint32_t code) {
     if (code == 0x001) { MENU[0] = (MENU[0] == 0) ? CUR_MAX : MENU[0] - 1; MENU[2] = 1; MENU[8] = 0; MENU[9] = 0; return; }  /* Up: also clear sel delta */
     if (code == 0x002) { MENU[0] = (MENU[0] + 1) % (CUR_MAX + 1); MENU[2] = 1; MENU[8] = 0; MENU[9] = 0; return; }           /* Down */
 
@@ -711,10 +795,13 @@ int osd_main(void *a0, void *a1, void *a2, void *a3) {
     int ctxok = (ctx >= 0x80000000u && ctx < 0xb0000000u);
     uint32_t frm = ctxok ? *(volatile uint32_t *)(ctx + 0xd4u) : 0;
     /* The encoded-frame counter only advances during real recording (ctx alone lingers valid in
-     * preview). But osd_main fires per CAPTURED frame (~30 Hz) while frm advances per ENCODED frame
-     * (~18 Hz), so gating input on "frm advanced THIS call" discarded ~1/3 of polls -> sluggish.
-     * Instead: on each advance refill a short latch; poll buttons on EVERY call while it's alive.
-     * The latch decays within a few calls once frm stops advancing -> still inert in preview. */
+     * preview): on each advance refill a short latch, which decays within a few calls once frm stops. */
+#if ZOOM_FIX && FRAME_DIAG
+    { uint32_t h = rd(BTN_HOLD);
+      wr(DG_CALLS, rd(DG_CALLS) + 1u);
+      if (h) { if (h > rd(DG_HCUR)) wr(DG_HCUR, h); }
+      else if (rd(DG_HCUR)) { wr(DG_HLAST, rd(DG_HCUR)); wr(DG_HCUR, 0); } }
+#endif
     int advanced = ctxok && (frm != MENU[7]);
     MENU[7] = frm;
     if (advanced) MENU[10] = REC_LATCH;
@@ -769,7 +856,9 @@ int osd_main(void *a0, void *a1, void *a2, void *a3) {
                                          /* feed the bitrate stub (read at the next record-init) */
                                          /* feed the RC min-Qp stub (live QpF menu value) */
     wr(FPS_VAL_ADDR, (MENU[17] == 16) ? 48000u : 54000u);   /* feed the framerate stub (N=fps*3000) */
-    handle_buttons(recording);           /* read input before stock WB (recording-only) */
+    /* Input gate = the real record flag (movie state 10) as well as the frm-advance latch. Presses are
+     * counted by key_cb_hook, so none is lost between osd_main calls. */
+    handle_buttons(recording || *(volatile uint8_t *)0x80e0a624u == 10);   /* before stock WB */
     int r = orig(a0, a1, a2, a3);        /* stock WB writes fixed gains */
     if (WB_OVERRIDE) apply_wb();         /* BISECT: gated -- see WB_OVERRIDE above */
     uint32_t ho = rd(0x80e08df0u);
@@ -812,6 +901,17 @@ static void clear_warn(volatile uint8_t *p0) { cclr(p0, WX - 2, WY - 2, 98, 43, 
  * Colour-independent by design -- the "FW" label carries the meaning, not the colour. */
 static void draw_version(volatile uint8_t *p0) {
     int X;
+#if FRAME_DIAG && ZOOM_FIX
+    {   uint32_t t = rd(FA_TYPE), b = FA_PARAMS + (t < 2u ? t : 0u) * 12u;
+        cclr(p0, WX - 2, FW_Y + 11, 98, 28, 0);
+        X = cstr(p0, WX, FW_Y + 13, "Z:", YEL); X = cnum(p0, X, FW_Y + 13, (int)rd(b), YEL);
+        X = cstr(p0, X, FW_Y + 13, " T:", YEL); X = cnum(p0, X, FW_Y + 13, (int)t, YEL);
+        X = cstr(p0, X, FW_Y + 13, " c", YEL); cnum(p0, X, FW_Y + 13, (int)(rd(DG_CPT) % 1000u), YEL);
+        X = cstr(p0, WX, FW_Y + 26, "X", YEL); X = cnum(p0, X, FW_Y + 26, (int)rd(b + 4u), YEL);
+        X = cstr(p0, X, FW_Y + 26, " Y", YEL); X = cnum(p0, X, FW_Y + 26, (int)rd(b + 8u), YEL);
+        X = cstr(p0, X, FW_Y + 26, " h", YEL); cnum(p0, X, FW_Y + 26, (int)(rd(DG_HLAST) % 100u), YEL);
+    }
+#endif
     cclr(p0, WX - 2, FW_Y - 2, 98, DIAG_ERASE ? 28 : 15, 0);   /* 2 lines while diagnosing */
     X = cstr(p0, WX, FW_Y, "FW ", YEL);   /* YEL = informative (same as "WB gains"); RED is reserved
                                            * for warnings, so the tag must not read as an alert. */
@@ -911,6 +1011,12 @@ void after_ontimer(void) {
     uint32_t ctx = rd(0x80e974dcu);
     int ctxok = (ctx >= 0x80000000u && ctx < 0xb0000000u);
     int show_stall = 0, show_blank = 0;
+#if ZOOM_FIX
+#if FRAME_DIAG
+    wr(DG_CPT, rd(DG_CALLS)); wr(DG_CALLS, 0);
+#endif
+    zoom_fix_tick(recording);
+#endif
     if (recording && ctxok) {
         wr(BLK_DONE, 0);   /* active recording -> clear any stale "REEL ENDED" message */
         uint32_t frm = *(volatile uint32_t *)(ctx + 0xd4u);

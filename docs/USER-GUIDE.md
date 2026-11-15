@@ -78,6 +78,8 @@ capture for real. **Settings are saved** and survive a power cycle.
 | **Minus / Plus** | fine step, one at a time |
 | OK, Back | unchanged: stop recording / back |
 
+Every press counts, even quick taps, but the value on screen can take a moment to catch up.
+
 The `[ ]` brackets mark the value being edited.
 
 | setting | values | default | notes |
@@ -150,12 +152,13 @@ stalls at the same spot on one reel, record that reel at x2, or use Auto exposur
 
 ## Troubleshooting
 
-| symptom | what to do |
-|---|---|
-| Flashed, but the old build still boots | See [It didn't flash](BUILDING.md#it-didnt-flash) |
-| Buttons do nothing in preview | Expected. The menu only works while recording (`Edit in REC` at the top of the list) |
-| Very dark picture, `WB gains` near 000,000,000 | Start a recording and use `Reset` (FW 272+ ignores invalid saved WB values) |
-| Reels of faded or thin film stop early with `REEL ENDED` | Set `ASt: OFF` |
-| `REC STALLED` | Try another card. Check `QpF` is off. Always at the same spot on one reel in manual exposure at x4: record it at `BR: x2`, or use Auto exposure |
-| Picture pumps light/dark every few seconds, `Exp:` jumps between 8333 and 16666 | Use manual exposure (`Exp` row), e.g. 10000–12000 |
-| The reel ended but recording didn't stop | Check the `Exp:` row: in manual (`M`) the reel-end auto-stop is off |
+| symptom | what to do                                                                                                                                                                                 |
+|---|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Flashed, but the old build still boots | See [It didn't flash](BUILDING.md#it-didnt-flash)                                                                                                                                          |
+| Buttons do nothing in preview | Expected. The menu only works while recording (`Edit in REC` at the top of the list)                                                                                                       |
+| Very dark picture, `WB gains` near 000,000,000 | Start a recording and use `Reset` (FW 272+ ignores invalid saved WB values)                                                                                                                |
+| Reels of faded or thin film stop early with `REEL ENDED` | Set `ASt: OFF`                                                                                                                                                                             |
+| `REC STALLED` | Try another card. Check `QpF` is off. Always at the same spot on one reel in manual exposure at x4: record it at `BR: x2`, or use Auto exposure                                            |
+| Picture pumps light/dark every few seconds, `Exp:` jumps between 8333 and 16666 | Use manual exposure (`Exp` row), e.g. 10000–12000                                                                                                                                          |
+| The reel ended but recording didn't stop | Check the `Exp:` row: in manual (`M`) the reel-end auto-stop is off                                                                                                                        |
+| In frame adjust, the position stops short of the edge at the widest zoom | Expected. At the three widest zoom steps the frame position is limited (±22, ±20, ±18) so the picture stays on the sensor. Older firmware, and stock, showed corrupted screen instead |

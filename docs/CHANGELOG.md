@@ -5,6 +5,21 @@ between were development and test builds. The top entry is the latest release. W
 is given, that command run on the release's commit gives a `FWDV280.BIN` with exactly that SHA256 (see
 [BUILDING.md](BUILDING.md#reproducibility-check)).
 
+## FW 292
+Rebuild: `.\build.ps1 -Build 292 -Date 2026-11-15`, SHA256
+`c82aa2cf95297e809ef4aa3009cd717134bd69b6feffc2384901f54f882e4387`
+
+- **Fixed: Corrupt screen when zooming out in frame adjust.** This is a bug in Kodak's own firmware. With
+  the frame position near an edge, zooming out pushed the picture window off the sensor, and the preview
+  and the recording showed color bars or stripes. At the three widest zoom steps the usable frame
+  position is smaller (±22, ±20, ±18 instead of ±24); the position is now kept inside that range when
+  you zoom, so the picture stays clean. A unit that was left in a bad state is also repaired at startup.
+  Checked on both the standard and the native build.
+- **Fixed: quick button presses getting lost in the menu.** The menu now counts every press the stock
+  key driver reports, so even rapid taps all register. The value on screen can still update a fraction
+  of a second later.
+- Builds 281–291 were shared for internal testing only.
+
 ## FW 280
 Rebuild: `.\build.ps1 -Build 280 -Date 2026-11-10`, SHA256
 `be659c6552a7df370efb8b18de0590d39d95b92331d3d59f356071c9b29982ac`

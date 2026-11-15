@@ -14,16 +14,17 @@ You supply videodoctor's base yourself, and the build checks it by SHA256.
 
 ## What it does
 
-| | |
-|---|---|
+| |                                                                                                                                                                                      |
+|---|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **Picture** | Bitrate ×4 by default (≈32 Mb/s, menu: ×1/×2/×4). FilmGrain off, 3D noise reduction on. 1600×1200 cropped to the image (or native 1728×1296 incl. sprocket holes, as a build option) |
-| **Frame rate** | 18 or 16 fps (file metadata; pick the one that matches your film) |
-| **White balance** | Manual R/G/B gains, live in the preview, saved across power cycles |
-| **Exposure** | Auto (stock) or manual, saved across power cycles. Fixes the light/dark pumping on dense film |
-| **Date** | Sets the recording date written into files (1980–2100), so a reel can carry the year it was shot |
-| **OSD** | Frame counter, WB, settings, live Qp / frame size / total size, gain and exposure, build number |
-| **Reel end** | Detects when the film runs out, stops the motor and closes the file cleanly (toggle: `ASt`; off in manual exposure) |
-| **Stall guard** | If no frame is encoded for ~8 s: `REC STALLED` warning; ~12 s: stops the recording cleanly and saves the file |
+| **Frame rate** | 18 or 16 fps (file metadata; pick the one that matches your film)                                                                                                                    |
+| **White balance** | Manual R/G/B gains, live in the preview, saved across power cycles                                                                                                                   |
+| **Exposure** | Auto (stock) or manual, saved across power cycles. Fixes the light/dark pumping on dense film                                                                                        |
+| **Date** | Sets the recording date written into files (1980–2100), so a reel can carry the year it was shot                                                                                     |
+| **OSD** | Frame counter, WB, settings, live Qp / frame size / total size, gain and exposure, build number                                                                                      |
+| **Reel end** | Detects when the film runs out, stops the motor and closes the file cleanly (toggle: `ASt`; off in manual exposure)                                                                  |
+| **Frame adjust** | Fixes Kodak's own bug: no more corrupted screen when zooming out with the frame near an edge                                                                                         |
+| **Stall guard** | If no frame is encoded for ~8 s: `REC STALLED` warning; ~12 s: stops the recording cleanly and saves the file                                                                        |
 
 Using it: **[docs/USER-GUIDE.md](docs/USER-GUIDE.md)**. Building it:
 **[docs/BUILDING.md](docs/BUILDING.md)**.

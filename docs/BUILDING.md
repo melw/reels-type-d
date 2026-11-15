@@ -51,6 +51,8 @@ hook: OnTimer -> my_ontimer
 hook: compose blit -> wrap_compose
 hook: AE set_exp/set_gain (8 sites) -> ae_exp_hook / ae_gain_hook
 hook: AE calc -> ae_calc_hook (frozen in manual)
+hook: zoom apply -> zoom_apply_hook (clamp offsets first)
+hook: key callback (runtime) -> key_cb_hook (counts presses)
 ```
 
 ### Options

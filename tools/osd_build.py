@@ -276,6 +276,15 @@ if "ae_exp_hook" in syms and "ae_gain_hook" in syms:
 if "ae_calc_hook" in syms:
     patch(img, 0x2b6bdc, jal(0x801e4854), jal(syms["ae_calc_hook"]), "AE calc")
     print("hook: AE calc -> ae_calc_hook (frozen in manual)")
+# 9. Kodak zoom bug: the frame-adjust zoom handler's apply call (0x8011eaa0) -> zoom_apply_hook, which clamps
+#    the frame offsets to the new zoom step's limit first, then does the same apply. Delay slot is a nop.
+if "zoom_apply_hook" in syms:
+    patch(img, 0x114ddc, jal(0x8011eaa0), jal(syms["zoom_apply_hook"]), "zoom apply")
+    print("hook: zoom apply -> zoom_apply_hook (clamp offsets first)")
+# 10. Button presses: not an image patch. osd_main swaps key_cb_hook into the stock key-event callback
+#     pointer (0x80E8B7E0) at runtime, so it only needs reporting here.
+if "key_cb_hook" in syms:
+    print("hook: key callback (runtime) -> key_cb_hook (counts presses)")
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 open(OUT, "wb").write(img)

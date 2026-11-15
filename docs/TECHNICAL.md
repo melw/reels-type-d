@@ -26,7 +26,7 @@ original instruction first.
 
 | # | site | original | becomes | runs | purpose |
 |---|---|---|---|---|---|
-| 1 | `0x802b7c90` | `jal 0x802b7b7c` (WB) | `jal osd_main` | every captured frame (~30/s, also in preview) | draw OSD, poll buttons, run the menu, apply WB/date/FPS, track Qp/size; tail-calls the stock WB |
+| 1 | `0x802b7c90` | `jal 0x802b7b7c` (WB) | `jal osd_main` | each stock WB update, only **~0–8 times a second** (measured; also in preview) | draw OSD, replay counted button presses, run the menu, apply WB/date/FPS, track Qp/size; tail-calls the stock WB |
 | 2 | `0x801f20c8` | `li a3,0xd2f0` + `sw a3,0(a1)` | `jal fps_stub` + `nop` | record setup | frame-rate tag = fps × 3000 (54000 = 18 fps, 48000 = 16) |
 | 3 | `0x80240588` | `sll v1,v1,3` | `j bitrate_stub` | record setup | `*(s0+0x50) = raw<<3 × m`, m ∈ {1,2,4}; the delay slot's original store runs, then the stub redoes it |
 | 4 | `0x80241074/78` | `slti a1,s4,10` + `li v1,10` | `j qpfloor_stub` + `nop` | every encoded frame | rebuilds the rate control's `max(cap, 10)` with the menu floor (10 when off, i.e. stock) |
@@ -34,6 +34,33 @@ original instruction first.
 | 6 | `0x8010bc70` | `jal 0x8010c164` (compose blit) | `jal wrap_compose` | every UI compose | runs the real blit, then repaints the OSD if the blit wiped it |
 | 7 | `0x802b6950/6c50/6f10/70d4`, `0x802b697c/6c7c/6f20/70e4` | `jal 0x801df99c` (sensor exposure), `jal 0x801df88c` (sensor gain) | `jal ae_exp_hook`, `jal ae_gain_hook` | every AE update (every 3rd captured frame) | manual exposure: substitute the menu values, else pass through and remember the AE's own |
 | 8 | `0x802b6bdc` | `jal 0x801e4854` (AE calculation, its only caller) | `jal ae_calc_hook` | every AE update | manual exposure: skip the calculation, so the AE result (and the sensor mode) stays frozen |
+| 9 | `0x80114ddc` | `jal 0x8011eaa0` (frame-adjust apply, in the zoom handler) | `jal zoom_apply_hook` | each zoom step in frame adjust (UI task) | clamp the frame offsets to the new zoom step's limit, then do the same apply |
+| 10 | pointer at `0x80E8B7E0` (runtime, not an image patch) | stock key-event callback | `key_cb_hook`, then the original | every debounced key press/release (stock key driver) | count presses per key, so `osd_main` can replay every one |
+
+**Frame adjust (hook 9).** Kodak's frame-adjust state: film type `guiFlimType` at `0x80E09F24` (0/1),
+and `sFrameParams[type]` at `0x80E09F3C`, 12 bytes each: `+0` zoom step (`DzoomIdx`, 0 = widest,
+3 = default, 16 = closest), `+4` X offset, `+8` Y offset. The handlers are zoom `0x80114d54`, Y
+`0x80114e6c` and X `0x80114f48`. The offsets are clamped to a fixed ±24 at every zoom. The values are
+saved as UI settings (setters `0x801263a8` X, `0x8012640c` Y, `0x80126470` zoom; item `0x194`/`0x196`/
+`0x198` + type), outside the NVM struct, so a bad state survives reflashing and a factory reset. Each
+handler ends in the apply `0x8011eaa0`, which sync-sends event `0x04000228` (handler `0x801302c4`,
+case 3: preview restart).
+Measured on device, standard and native build: the usable offset is **|offset| ≤ 18 + 2 × zoom step**
+for steps 0–2 (±18/±20/±22) and ±24 from step 3. The stock code ignores an offset change past that
+limit, keeping the last valid window position. But a zoom step never re-checks the position, so an
+offset that was valid at the old zoom pushes the window off the sensor: colour bars. Re-applying the same
+offset doesn't help; only changing the offset into the valid range does. `zoom_apply_hook` therefore
+clamps the offsets (struct and saved settings) before the zoom handler's one apply. A safety net in
+`after_ontimer` does the same clamp and apply when the offsets have been out of range for two ticks,
+never while recording. That covers a bad state saved by older firmware, and arrow presses past the limit.
+
+**Button presses (hook 10).** `osd_main` turned out to run only ~0–8 times a second, so polling the live
+key state (`0xA0E8B7D0` code, `0xA0E8B7DC` hold counter) missed taps that began and ended between two
+calls. The stock key driver `0x8023af10` debounces the keys and calls the pointer at `0x80E8B7E0` as
+`cb(1, 1, pressedBits)` for each new press (`cb(1, 0, releasedBits)` on release). `osd_main` swaps
+`key_cb_hook` into that pointer, re-checking on every call. The hook counts the pressed bits per key
+in scratch and jumps on to the original callback with the arguments unchanged. It's a leaf function and
+uses no stack. `handle_buttons` replays the counted presses while recording and drops them otherwise.
 
 **Manual exposure (hook 7).** The stock AE is two 3A callbacks: init `0x802b683c` and per-frame
 `0x802b6a08`, which does its work on every 3rd frame. It hands its result to the sensor driver as
@@ -146,7 +173,9 @@ a fresh unit. So every value has a safe "unset" meaning, and each one is range-c
 **Scratch** at `0x80345000`: `ST[]` (stall state), `MENU[]` at `+0x20` (cursor, live values,
 loaded-once flags). Single words: the fps value at `+0x100`, reel-end detector at `+0x300`, Qp/size
 trackers at `+0x310…+0x334`, Qp floor `+0x338`, bitrate `+0x33C`, OSD sentinel `+0x340`, erase
-diagnostics `+0x344…+0x354`. The exact layout is commented in `osdmenu.c`.
+diagnostics `+0x344…+0x354`, zoom-fix state `+0x360`, `FRAME_DIAG` counters `+0x368…+0x374`, the
+wrapped key callback `+0x378` and the per-key press counts `+0x380…+0x394`. The exact layout is
+commented in `osdmenu.c`.
 
 ## Encoder and rate control
 

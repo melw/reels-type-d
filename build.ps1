@@ -62,7 +62,7 @@ $cflags = "-DFW_BUILD=$Build -march=mips32 -EL -ffreestanding -nostdlib -nodefau
           "-fomit-frame-pointer -fno-stack-protector -Os -mno-abicalls -fno-pic -fno-reorder-blocks"
 # The mod is linked to run at 0x8034116c (free space in the base). orig = the stock WB function the
 # per-frame hook tail-calls; resolve = the firmware's display-pool getter.
-$lflags = "-EL -Ttext=0x8034116c -e 0x8034116c --defsym orig=0x802b7b7c --defsym resolve=0x80006500 --defsym set_exp=0x801df99c --defsym set_gain=0x801df88c --defsym ae_calc=0x801e4854"
+$lflags = "-EL -Ttext=0x8034116c -e 0x8034116c --defsym orig=0x802b7b7c --defsym resolve=0x80006500 --defsym set_exp=0x801df99c --defsym set_gain=0x801df88c --defsym ae_calc=0x801e4854 --defsym fa_apply=0x8011eaa0 --defsym fa_set_x=0x801263a8 --defsym fa_set_y=0x8012640c"
 Native { & wsl.exe bash -c "cd '$wslRoot' && mipsel-linux-gnu-gcc $cflags -c src/osdmenu.c -o build/osd.o && mipsel-linux-gnu-ld $lflags -o build/osd.elf build/osd.o" }
 CheckExit "compile/link"
 
