@@ -34,15 +34,16 @@ Using it: **[docs/USER-GUIDE.md](docs/USER-GUIDE.md)**. Building it:
 Windows 10/11 with WSL (Ubuntu) and Python 3:
 
 ```powershell
-# one-time: toolchain in WSL, Pillow for the boot splash
+# one-time: toolchain in WSL, Pillow for the boot splash (+ numpy for -Card)
 wsl sudo apt install gcc-mipsel-linux-gnu binutils-mipsel-linux-gnu
-pip install pillow
+pip install pillow numpy
 
 # one-time: base\FWDV280.BIN (videodoctor's release) and bin\*.exe (packing tools)
 #           -- see base\README.md and bin\README.md
 
 .\build.ps1 -Build <N>              # -> out\build-<N>\FWDV280.BIN   (<N> = number shown on screen)
 .\build.ps1 -Build <N> -Drive E     # ...and copy it to the FAT32 SD card in E:
+.\build.ps1 -Build <N> -Card -Drive E   # or: run it from the card without flashing (pldr\README.md)
 ```
 
 Each release rebuilds **byte-identically** from its commit. The exact command and the expected SHA256
@@ -55,8 +56,14 @@ src/osdmenu.c        the whole mod (C + a few small asm stubs)
 src/font_data.h      7x12 bitmap font (from 0dan0's project)
 tools/fonts/         Courier Prime for the boot splash (SIL Open Font License)
 tools/osd_build.py   splices the mod into the base and applies every patch (each one asserts the original instruction first)
-build.ps1            compile -> splice -> pack -> stage
-deploy.ps1           copy a build to an SD card
+tools/make_pldr.py   builds the patch-loader FW96658T.BIN (runs a build from the card, no flashing)
+tools/make_probe.py  builds the type probe FW96658T.BIN (shows the installed firmware and its type, changes nothing)
+tools/pldr_common.py shared build steps of the two; splashgen.py + jpegbits.py: their start-up screens
+tools/emu_pldr.py    emulator test for both (needs a flash dump, optional)
+tools/bcl_lz.py      Novatek BCL1/LZ unpacker (and packer) in Python
+pldr/                the card programs' source (one pldr.c for both) and the firmware they recognise (bases.txt)
+build.ps1            compile -> splice -> pack -> stage [-> patch-loader]
+deploy.ps1           copy a build to an SD card (to flash, or -Card to run from the card)
 base/                videodoctor's base firmware goes here (not committed)
 bin/                 the two Novatek packing tools go here (not committed)
 docs/                user guide, building, technical notes, changelog

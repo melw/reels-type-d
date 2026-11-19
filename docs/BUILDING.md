@@ -6,7 +6,7 @@
 |---|---|
 | Windows 10/11 | the packing tools are Windows executables |
 | WSL with Ubuntu | for the MIPS cross compiler. Tested: Ubuntu 24.04, `mipsel-linux-gnu-gcc` 12.4 |
-| Python 3 on Windows | as `python` on the PATH, with Pillow (`pip install pillow`) for the boot splash |
+| Python 3 on Windows | as `python` on the PATH, with Pillow (`pip install pillow`) for the boot splash; for `-Card` and the type probe also numpy |
 | `base\FWDV280.BIN` | videodoctor's Type D release, see [../base/README.md](../base/README.md) |
 | `bin\ntkcalcVS.exe`, `bin\bfc4ntkVS.exe` | Novatek packing tools, see [../bin/README.md](../bin/README.md) |
 
@@ -17,6 +17,8 @@ wsl --install -d Ubuntu              # if you don't have WSL yet
 wsl sudo apt update
 wsl sudo apt install gcc-mipsel-linux-gnu binutils-mipsel-linux-gnu
 pip install pillow
+pip install numpy                    # only for -Card and the type probe
+pip install unicorn                  # only for the emulator test (-Dump)
 ```
 
 ## Build
@@ -39,6 +41,8 @@ What it does:
    original instruction is there**, so a wrong base fails here, not on the device.
 3. Checksums, compresses and checksums again → `build\vd-osd.bcl`.
 4. Stages `out\build-<N>\FWDV280.BIN` and a `manifest.txt` (source and firmware hashes).
+5. With `-Card`: builds the patch-loader `out\build-<N>\FW96658T.BIN` (`tools\make_pldr.py`, see
+   [Run from the card](#run-from-the-card-no-flashing)).
 
 A good run ends with `BUILD OK: FW <N>` and lists all the hooks:
 
@@ -65,6 +69,8 @@ hook: key callback (runtime) -> key_cb_hook (counts presses)
 | `-NoHooks` | diagnostic: constant patches only, none of the mod's code ever runs. No OSD. |
 | `-Bitrate x1\|x2\|x4` | only with `-NoHooks`: static bitrate, because there's no menu |
 | `-Date YYYY-MM-DD` | the build date on the boot splash. Default: today. Pass a release's date to rebuild it byte-identically |
+| `-Card` | also build `FW96658T.BIN`, the patch-loader: runs from the SD card, never flashes. See [Run from the card](#run-from-the-card-no-flashing) |
+| `-Dump file` | with `-Card`: test the patch-loader in an emulator against a flash dump first (needs `pip install unicorn`) |
 | `-NoSplash` | keep the original "Type D - WIP" boot splash. By default the splash shows a feature summary with `Vers: FW N Type D` and the build date, which tells you which file was flashed even if the mod itself doesn't start. It is drawn with Courier Prime from `tools/fonts/` (SIL Open Font License, see `tools/fonts/OFL.txt`) |
 
 ### Reproducibility check
@@ -94,6 +100,41 @@ flushes Windows' write cache to the card. Then:
 4. Check the `FW` number on screen.
 
 Full user-side steps are in [USER-GUIDE.md](USER-GUIDE.md#flashing).
+
+## Run from the card (no flashing)
+
+```powershell
+.\build.ps1 -Build <N> -Card -Drive E
+```
+
+This builds `out\build-<N>\FW96658T.BIN` next to the normal `FWDV280.BIN` and copies it to the card as
+`FW96658T.BIN`. With that file on the card, the bootloader runs it from RAM at every power-on. It reads
+the unit's installed firmware, patches it into build `<N>` in RAM and starts it. **Nothing is written to
+flash.** Remove the card and the unit boots its installed firmware again.
+
+It patches only the installed firmware versions listed in [../pldr/bases.txt](../pldr/bases.txt): stock
+Type D, videodoctor's build and the releases since FW 270. Anything else boots unpatched, with "Unknown
+firmware" and a code on the start-up screen. This makes it the quickest way to try a test build: no 30 s
+flash, and nothing to undo.
+
+- Boot takes slightly longer than from flash, because the firmware is read and unpacked by our code first.
+- A `FWDV280.BIN` on the same card takes precedence: that boot flashes it, and from the next boot the card
+  file runs on top of the newly flashed firmware.
+- Settings are saved to the unit's settings memory as usual, as with a flashed build.
+
+Details, the base files and the emulator test: [../pldr/README.md](../pldr/README.md).
+
+### Type probe
+
+```powershell
+python tools\make_probe.py --out out\probe\FW96658T.BIN
+```
+
+The same kind of card file, but it changes nothing: it shows which firmware is installed and which type
+it is for ("Type probe / TYPE D / reels-type-d FW 292" and a code) on the start-up screen, then starts the
+firmware as usual. It names the firmware, not the hardware: a unit flashed with the wrong type shows that
+wrong type. Unknown firmware shows "Unknown firmware" and its code. It's built from the same source as the
+patch-loader, see [../pldr/README.md](../pldr/README.md).
 
 ## It didn't flash
 

@@ -1,0 +1,19 @@
+# Installed firmware that the card programs recognise (see pldr/README.md).
+# Both programs fingerprint the unit's installed firmware (unpacked size + 32-bit word sum):
+#   patch-loader (build.ps1 -Card): patches only the rows with use = patch; anything else boots unpatched
+#   type probe   (python tools/make_probe.py): shows "TYPE <type>" + the name for every row
+# A file missing on disk is skipped with a warning; a file with a different SHA256 stops the build.
+# The order is the probe's screen order: keep it (the released probe build depends on it).
+#
+# name  type  splash    use    file (relative to the repo root)  bytes    SHA256 of the packed FWDV280.BIN                                   name on the probe screen
+stockD  D     0x333948  patch  pldr/bases/stockD.BIN             3996144  6a08018917aa5bb9798cca1f39c4ecb66171bb96b096e9b62c5be8f55e98259b  Kodak stock firmware
+vdD     D     0x333948  patch  base/FWDV280.BIN                  3938896  4aba449dba13c5107094b346414c61aad8a73d28a24da827e7e0e46fadf107ec  videodoctor's Type D build
+0dan0D  D     0x333948  probe  pldr/bases/0dan0D.BIN             3937832  208e3b6d3aa22333c4be71984c1baff223ce7eba6654e11653c54a6bf6930f00  0dan0 v7.7.1 (Type D)
+fw270   D     0x333948  patch  pldr/bases/fw270.BIN              3945280  7bcb6f01b51e6b1fd4ca5d5764b3c2ca17be36bd523ff0bf4fd63ceadc5ed276  reels-type-d FW 270
+fw271   D     0x333948  patch  pldr/bases/fw271.BIN              3945328  cc423bdeb3836235dbecbb29f151ac63e283a0c3dd986080483c89f5fad3d944  reels-type-d FW 271
+fw272   D     0x333948  patch  pldr/bases/fw272.BIN              3945676  a8bd542f4a97dcdf0686db85d9dce8624aed30e49c7889f98958a9080fd5e71a  reels-type-d FW 272
+fw280   D     0x333948  patch  pldr/bases/fw280.BIN              3946696  be659c6552a7df370efb8b18de0590d39d95b92331d3d59f356071c9b29982ac  reels-type-d FW 280
+fw292   D     0x333948  patch  pldr/bases/fw292.BIN              3947460  c82aa2cf95297e809ef4aa3009cd717134bd69b6feffc2384901f54f882e4387  reels-type-d FW 292
+0dan0A  A     0x333f1c  probe  pldr/bases/0dan0A.BIN             3940440  fb2e9e2ecfd3622f826990a8bda213de01fdf5783dd885be3602cffddb955e08  0dan0 v7.7.0 (Type A)
+0dan0B  B     0x333f18  probe  pldr/bases/0dan0B.BIN             3940496  7f75f9946fc03a03b80b078cdce2d13799136eba844cd5480dc82a6f4eb5d455  0dan0 v7.7.0 (Type B)
+0dan0C  C     0x333f28  probe  pldr/bases/0dan0C.BIN             3939964  0293a16660d769937a2270c88f6b126a711e78b7faee24b23199faafaaae940c  0dan0 v7.7.1 (Type C)

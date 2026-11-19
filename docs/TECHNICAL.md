@@ -238,3 +238,75 @@ worst normal gap is 2 ticks.
   `ASt: off (M)`, and after switching back to Auto detection waits 40 encoded frames (~20 s) for the AE
   to settle. A manual-mode detector would need a picture-brightness signal (the AE's scene metric at
   `0x80F823AC` is a candidate) and measurements on real footage.
+
+## Bootloader and the patch-loader
+
+Unlike the rest of this file, these addresses belong to the **bootloader** in the unit's SPI flash, not to
+the firmware image. They come from a read-only dump of a Type D unit's flash (4 MB, Macronix chip). The
+bootloader is identified by the strings `DV280 Loader NT96658 Start` and `658B_DDR3_LV1_3_1024Mb 06/28/2020`.
+
+Flash layout: bootloader at `0x0` (stage 1 uncompressed, body BCL1-packed at `0x92c`), firmware as a BCL1
+file at **`0x4000`** (exactly the `FWDV280.BIN` that was flashed, byte for byte).
+
+Boot sequence:
+
+- Stage 1 runs at `0x87f00000` (RAM is 128 MB). It copies three helpers to `0x8ff04000`: the BCL
+  decompressor `0x8ff0415c (src, dst, packed_size)`, I-cache invalidate `0x8ff040b4` and D-cache write-back
+  `0x8ff04110`. It unpacks the body to `0x87f05000`, calls it, and then jumps to `*(0x80000000)`.
+- The body checks the card for three names (table at `0x87f08d0c`), in this order:
+  - `FWDV280.BIN` → flash it (boot flag 1). The firmware deletes the file afterwards if `NVTDELFW` exists.
+  - `LDDV280.BIN` → **rewrite the bootloader** (flag 2). Never put this on a card.
+  - `FW96658T.BIN` → load into RAM and run, no flash write (flag 4). Raw images must have word `0x68` =
+    file size; BCL1 files are unpacked to `0x80000000`. A raw image whose word 0 has all of
+    `0xb0000000` set takes a separate SRAM path.
+  - (`FWDV280C.BIN` is also in the table; its purpose is unknown.)
+- With no card file it boots from flash (flag 8): flash open `0x87f08840`, **read**
+  `0x87f082c8 (block_4k, len, dst, 2)` from block 4, unpack to `0x80000000`, flash close `0x87f078d4`.
+  The flash **write** routine is `0x87f07ad4`; only the update paths use it.
+- Every loaded image passes the check at `0x87f05228`: the sum of its little-endian halfwords plus
+  n(n−1)/2 must be 0 mod 65536 (what `ntkcalcVS -cw` writes at `0x6c`/`0x6e`).
+- Before returning, it writes the **handoff block** at `0x80000080`: `"LD658"`, `0x88` chip id
+  `0x01000023`, **`0x94` boot flags**, `0x98` firmware size, `0x9c` a timer value, `0xa0` `0x4000`,
+  `0xa4` `0x3c0000`. The firmware only tests bit 0 of the flags (after an update, `0x800efb18` and
+  `0x80127080`), so it behaves the same after a flash boot and a card boot.
+
+The patch-loader and the type probe ([../pldr/](../pldr/README.md)) are raw `FW96658T.BIN` files built from
+the same `pldr.c` (the patch-loader with `-DPATCH`):
+
+1. `entry.S` copies the image, including the handoff block the bootloader wrote into it, to `0x87000000`.
+   It flushes the caches with its own loops (16 KB index operations, as stage 1 does) and continues there
+   with `jr.hb`. The firmware is about to be unpacked over `0x80000000`. No bootloader code is called yet.
+2. `pldr.c` compares 38 words at the bootloader routines it uses (and the id string) with the Type D
+   bootloader ([../pldr/sig.h](../pldr/sig.h)):
+   - **They match:** it opens the flash, reads the packed firmware from block 4 to `0x86000000`, closes
+     the flash, and unpacks it to `0x80000000` with the bootloader's decompressor.
+   - **They don't:** it reads the flash itself (below), unpacks with its own C version of the BCL LZ
+     decoder, and checks the size word and the bootloader's image checksum. Any failure stops it.
+3. It fingerprints the result (size + 32-bit word sum):
+   - known base, patch-loader: it copies that base's runs of target words from the shared pool;
+   - known, probe: it writes the type screen over the firmware's start-up JPEG (known offset);
+   - unknown: it writes the "Unknown firmware" screen over the first 864×480 JPEG between `0x300000` and
+     `0x380000` that the code references (a `lui`/`addiu` pair). If there's none, it pauses about 15 s
+     on the timer, re-enabling it first, because the bootloader leaves it stopped.
+4. It restores the handoff block with flag 4 replaced by 8 (a normal flash boot) and `0x98` = firmware
+   size, flushes the caches and jumps to the firmware entry `*(0x80000000)`.
+
+The screens are baseline 4:2:2 JPEGs assembled at boot from precomputed Huffman-coded pieces. Each piece
+leaves out the DC codes of its first block, so the program codes those at boot. That way the 14 hex
+digits can sit in plain 32-pixel cells next to each other.
+
+**The SoC SPI controller** (`0xb0230000`), as the bootloader drives it, and as the own read path uses it:
+
+| | |
+|---|---|
+| clock and pins | `0xb0020064` bit `0x40`, `0xb0010004` bits `0x2002` |
+| `+0x00` control | bit 0 = enable (keep it set); `0x8000` = chip select released; clear `0x100` before a transfer; `0x200000` clear = flash → RAM |
+| `+0x04` status | 1 = tx ready, 2 = rx full, `0x40` = DMA done; write `0x1ff` to clear |
+| `+0x0c` / `+0x10` | rx / tx word (the command in the lowest byte, then the address bytes) |
+| `+0x18` | low 2 bits = 3 (32-bit words); bits 16–17 = lanes; the bootloader leaves `0x40000` set |
+| `+0x1c` / `+0x20` / `+0x24` | DMA start (write 1) / byte count (rounded up to 16) / RAM address (cached `0x86000000` works; write back the D-cache first, read the data back uncached) |
+| timer | 1 MHz counter at `0xb0040108`, enable at `0xb0040100` |
+
+Both programs use only reads: the bootloader's read, open/close, decompress and cache routines, or the
+READ command `0x03`. If they halt, they do so in a loop before the firmware starts. Removing the card
+recovers the unit.
