@@ -6,7 +6,8 @@
     2. splice into the base + patch        (python tools/osd_build.py -> build/vd-osd.rbn)
     3. checksum + pack                     (bin/ntkcalcVS.exe, bin/bfc4ntkVS.exe -> build/vd-osd.bcl)
     4. stage                               (out/build-<N>/FWDV280.BIN + manifest.txt)
-    5. optional: copy to an SD card        (-Drive E)
+    5. optional: patch-loader              (-Card: python tools/make_pldr.py -> out/build-<N>/FW96658T.BIN)
+    6. optional: copy to an SD card        (-Drive E; with -Card the card file, otherwise the flash file)
 
   Usage:
     .\build.ps1 -Build <N>                  # build, stage to out\build-<N>\
@@ -16,6 +17,9 @@
     .\build.ps1 -Build <N> -NoSplash        # original "Type D - WIP" boot splash
     .\build.ps1 -Build <N> -Date YYYY-MM-DD # splash date (default: today) -- rebuild a release byte-identically
                                             # (each CHANGELOG entry lists its exact command and SHA256)
+    .\build.ps1 -Build <N> -Card            # also build FW96658T.BIN: runs from the SD card, never flashes
+    .\build.ps1 -Build <N> -Card -Dump <f>  # ...and test it in an emulator against a flash dump (pldr\README.md)
+    .\build.ps1 -Build <N> -Card -Drive E   # ...and copy FW96658T.BIN (not FWDV280.BIN) to the SD card in E:
 
   -Build is the number shown on screen as "FW <N>" -- bump it for every build you flash.
 
@@ -30,7 +34,9 @@ param(
   [string]$Drive = "",
   [switch]$NoHooks,
   [switch]$NoSplash,  # keep the original "Type D - WIP" boot splash
-  [string]$Date = (Get-Date -Format "yyyy-MM-dd")   # build date shown on the boot splash
+  [string]$Date = (Get-Date -Format "yyyy-MM-dd"),  # build date shown on the boot splash
+  [switch]$Card,      # also build the patch-loader FW96658T.BIN (run from the SD card, see pldr\README.md)
+  [string]$Dump = ""  # with -Card: emulator test against this SPI flash dump (needs: pip install unicorn)
 )
 $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
@@ -104,5 +110,26 @@ Copy-Item "$Root\build\vd-osd.bcl" "$out\FWDV280.BIN" -Force
 ) | Set-Content -Encoding utf8 "$out\manifest.txt"
 Write-Host "staged -> $out\FWDV280.BIN"
 
-if($Drive){ & "$Root\deploy.ps1" -Bin "$out\FWDV280.BIN" -Drive $Drive }
+# 5) patch-loader (optional) ----------------------------------------------------------------------
+if($Card){
+  Step "5/5 patch-loader (run from card)"
+  if($Dump -and -not (Test-Path $Dump)){ Die "-Dump $Dump not found" }
+  $pargs = @("$Root\tools\make_pldr.py", "--target-rbn", "$Root\build\vd-osd.rbn", "--target-bin", "$out\FWDV280.BIN",
+             "--out", "$out\FW96658T.BIN", "--build", "$Build")
+  if($Dump){ $pargs += @("--dump", $Dump) }
+  $plog = Native { python @pargs }
+  CheckExit "make_pldr.py"
+  $plog | ForEach-Object { Write-Host $_ }
+  @(
+    "CardSHA256=$((Get-FileHash "$out\FW96658T.BIN" -Algorithm SHA256).Hash)"
+    ($plog | Where-Object { $_ -like "PLDR_BASES=*" }) -replace '^PLDR_BASES=','CardBases='
+    "CardEmulatorTest=$(if($Dump){"passed"}else{"skipped"})"
+  ) | Add-Content -Encoding utf8 "$out\manifest.txt"
+  Write-Host "staged -> $out\FW96658T.BIN"
+}
+
+if($Drive){
+  if($Card){ & "$Root\deploy.ps1" -Bin "$out\FW96658T.BIN" -Drive $Drive -Card }
+  else     { & "$Root\deploy.ps1" -Bin "$out\FWDV280.BIN" -Drive $Drive }
+}
 Write-Host "`nBUILD OK: FW $Build" -ForegroundColor Green
