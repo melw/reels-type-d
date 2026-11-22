@@ -160,7 +160,7 @@ if os.environ.get("KODAK_SPLASH", "1") == "1":
         "Exp : Auto or Manual",
         "Feat: Auto stop at reel end,",
         "      Stall guard, FilmGrain off,",
-        "      3DNR on, FPS: 16 or 18,",
+        "      3DNR on, FPS: 16, 18 or 24,",
         "      Recording date, OSD stats",
         "      In REC: arrows +/- for menu",
         "", "", "",                                                      # room for future lines

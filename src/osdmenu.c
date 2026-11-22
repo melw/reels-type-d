@@ -3,7 +3,7 @@
  * Linked at 0x8034116c and spliced into videodoctor's Type D base by tools/osd_build.py, which also
  * installs the hooks that call into this file (see docs/TECHNICAL.md for the full map):
  *   osd_main      per captured frame (via the stock WB call): draw OSD, run the menu, apply WB/FPS/date
- *   fps_stub      frame-rate setup: 16 or 18 fps from the menu
+ *   fps_stub      frame-rate setup: 16, 18 or 24 fps from the menu
  *   bitrate_stub  record-init: bitrate multiplier x1/x2/x4 from the menu
  *   qpfloor_stub  rate-control minimum Qp (menu "QpF", OFF = stock behaviour)
  *   my_ontimer    movie-window timer (~2-3 Hz): stall detector, REC STALLED warning, reel-end auto-stop
@@ -59,7 +59,7 @@ extern uint32_t resolve(uint32_t h);                       /* 0x80006500 */
 #define NVM_YEAR 0x80E0ADC4u /* word 8 */
 #define NVM_MON  0x80E0ADC8u /* word 9 */
 #define NVM_DAY  0x80E0ADCCu /* word 10 */
-#define NVM_FPSN 0x80E0ADD0u /* word 11 = fps number (16 or 18) */
+#define NVM_FPSN 0x80E0ADD0u /* word 11 = fps number (16, 18 or 24) */
 #define NVM_QPF  0x80E0ADE0u /* word 15 = Qp floor, NEW semantics: 0 = OFF, else 15..22. */
 #define NVM_BR   0x80E0ADDCu /* word 14 = bitrate multiplier, ONLY 1/2/4 (0/unset/anything else -> BR_DEF). */
 #define NVM_AEXP  0x80E0ADE4u /* word 16 = manual exposure (us); 0/out of range = Auto (fresh unit reads 0) */
@@ -74,7 +74,7 @@ extern uint32_t resolve(uint32_t h);                       /* 0x80006500 */
  *                    [8]=last adjust delta (sel-line) [9]=delta-show countdown
  *                    [10]=record latch (decays when frm stops advancing -> buttons poll every call)
  *                    [11]=date-loaded-this-boot [12]=year [13]=month [14]=day
- *                    [17]=fps number (16/18) [19]=fps-loaded-this-boot
+ *                    [17]=fps number (16/18/24) [19]=fps-loaded-this-boot
  *                    [20]=Qp floor (16..26) [21]=qpfloor-loaded-this-boot
  *                    [22]=reel-end auto-stop (1=on,0=off) [23]=autostop-loaded-this-boot
  *                    [24]=bitrate multiplier (1/2/4) [25]=bitrate-loaded-this-boot
@@ -153,7 +153,7 @@ extern uint32_t resolve(uint32_t h);                       /* 0x80006500 */
 #define BR_DEF 4
 #define BR_OK(v) ((v) == 1u || (v) == 2u || (v) == 4u)
 #define QPFLOOR_ADDR 0x80345338u  /* scratch: LIVE RC min-Qp floor. */
-#define FPS_VAL_ADDR 0x80345100u  /* scratch: N=fps*3000 (48000/54000); fps_stub reads it @record-init */
+#define FPS_VAL_ADDR 0x80345100u  /* scratch: N=fps*3000 (48000/54000/72000); fps_stub reads it @record-init */
 #define YEAR_COARSE 10  /* Left/Right step on the year field (+/- = fine ±1) */
 #define YEAR_MIN 1980   /* FAT 1980 floor */
 #define YEAR_MAX 2100
@@ -380,11 +380,12 @@ __asm__(
     ".set reorder\n"
 );
 #endif
-/* load persisted FPS choice once per boot (default 18) */
+/* load persisted FPS choice once per boot 16, 18 or 24 (default 18) */
 static void load_fps_once(void) {
     if (MENU[19]) return;
     MENU[19] = 1;
-    MENU[17] = (rd(NVM_FPSN) == 16) ? 16 : 18;
+    uint32_t v = rd(NVM_FPSN);
+    MENU[17] = (v == 16 || v == 24) ? v : 18;
 }
 /* load the persisted Qp floor once per boot. 0 = OFF; anything outside 15..22 also falls back to OFF. */
 static void load_qpf_once(void) {
@@ -483,8 +484,11 @@ static void do_button(uint32_t code) {
     else return;                                       /* other buttons ignored */
 
     MENU[2] = 1;
-    if (MENU[0] == CUR_FPS) {                    /* FPS: toggle 16 <-> 18 */
-        MENU[17] = (MENU[17] == 16) ? 18 : 16;
+    if (MENU[0] == CUR_FPS) {                    /* FPS: toggle 16 <-> 18 <-> 24 */
+        int v = (int)MENU[17];
+        if (dir > 0) v = (v == 16) ? 18 : ((v == 18) ? 24 : 16);
+        else         v = (v == 24) ? 18 : ((v == 16) ? 24 : 16);
+        MENU[17] = (uint32_t)v;
         wr(NVM_FPSN, MENU[17]);                  /* persist */
         MENU[8] = 0;                             /* no sel-delta for a toggle */
         return;
@@ -855,7 +859,7 @@ int osd_main(void *a0, void *a1, void *a2, void *a3) {
     { uint32_t b = MENU[24]; if (!BR_OK(b)) b = BR_DEF; wr(BR_VAL_ADDR, b); }
                                          /* feed the bitrate stub (read at the next record-init) */
                                          /* feed the RC min-Qp stub (live QpF menu value) */
-    wr(FPS_VAL_ADDR, (MENU[17] == 16) ? 48000u : 54000u);   /* feed the framerate stub (N=fps*3000) */
+    wr(FPS_VAL_ADDR, (MENU[17] == 16) ? 48000u : ((MENU[17] == 18) ? 54000u : 72000u));   /* feed the framerate stub (N=fps*3000) */
     /* Input gate = the real record flag (movie state 10) as well as the frm-advance latch. Presses are
      * counted by key_cb_hook, so none is lost between osd_main calls. */
     handle_buttons(recording || *(volatile uint8_t *)0x80e0a624u == 10);   /* before stock WB */

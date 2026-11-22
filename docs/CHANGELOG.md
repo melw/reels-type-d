@@ -5,6 +5,17 @@ between were development and test builds. The top entry is the latest release. W
 is given, that command run on the release's commit gives a `FWDV280.BIN` with exactly that SHA256 (see
 [BUILDING.md](BUILDING.md#reproducibility-check)).
 
+## FW 295
+Rebuild: `.\build.ps1 -Build 295 -Date 2026-11-22`, SHA256
+`32ceee0440de58cd0784ffb944ab56b5c63bbf70009812890c67005445861226`
+
+- **24 FPS support.** In recording mode it's possible to toggle now between 16/18/24 frames per second.
+- **Card only mode.** Build and deploy with `-Card` to generate **`FW96658T.BIN`** - this build never 
+  flashes anything on the device, it is executed at boot as long as the bin file is kept on the SD card.
+- **Type probe.** Experimental Type probe that launches in Card mode and attempts to detect which 
+  firmware or device type you're running.
+- For more information on the Card mode and Type probe, see [../pldr/README.md](../pldr/README.md)
+
 ## FW 292
 Rebuild: `.\build.ps1 -Build 292 -Date 2026-11-15`, SHA256
 `c82aa2cf95297e809ef4aa3009cd717134bd69b6feffc2384901f54f882e4387`
